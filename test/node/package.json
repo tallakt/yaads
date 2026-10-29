@@ -1,0 +1,10 @@
+{
+  "name": "yaads-node-tests",
+  "private": true,
+  "description": "jisotalo's ads-client and ads-server, as devices and clients for yaads's tests",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "ads-client": "2.2.0",
+    "ads-server": "1.1.2"
+  }
+}

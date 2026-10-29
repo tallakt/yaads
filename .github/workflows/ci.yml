@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - elixir: "1.15"
+            otp: "26"
+          - elixir: "1.16"
+            otp: "26"
+          - elixir: "1.17"
+            otp: "27"
+          - elixir: "1.18"
+            otp: "27"
+          - elixir: "1.19"
+            otp: "27"
+          # OTP 28 changed public_key's records, which ADS.Certificate follows.
+          - elixir: "1.19"
+            otp: "28"
+            newest: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ matrix.elixir }}
+          otp-version: ${{ matrix.otp }}
+
+      - name: Restore deps cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ matrix.elixir }}-${{ matrix.otp }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-${{ matrix.elixir }}-${{ matrix.otp }}-
+
+      - name: Restore dialyzer PLT cache
+        if: matrix.newest
+        uses: actions/cache@v4
+        with:
+          path: priv/plts
+          key: ${{ runner.os }}-plt-${{ matrix.elixir }}-${{ matrix.otp }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-plt-${{ matrix.elixir }}-${{ matrix.otp }}-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Check formatting
+        run: mix format --check-formatted
+
+      - name: Compile (warnings as errors)
+        run: mix compile --warnings-as-errors
+
+      - name: Credo
+        if: matrix.newest
+        run: mix credo
+
+      - name: Dialyzer
+        if: matrix.newest
+        run: mkdir -p priv/plts && mix dialyzer --format github
+
+      # Coverage is counted differently from one Elixir version to the next, so its threshold is
+      # held on the newest.
+      - name: Run tests
+        if: ${{ !matrix.newest }}
+        run: mix test
+
+      - name: Run tests, with coverage
+        if: matrix.newest
+        run: mix test --cover

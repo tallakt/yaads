@@ -1,0 +1,27 @@
+yaads
+Copyright 2026 Tallak Tveide
+
+This product includes software developed by Tallak Tveide, licensed under
+the Apache License, Version 2.0 (see LICENSE).
+
+It implements ADS, Beckhoff's Automation Device Specification, as Beckhoff
+Automation GmbH & Co. KG documents it in the Beckhoff Information System,
+and Secure ADS as Beckhoff's manual "TwinCAT 3 Secure ADS" describes it,
+with what goes inside the TLS connection as described by the README of
+https://github.com/kevinherron/beckhoff-secure-ads (MIT License,
+Copyright (c) 2026 Kevin Herron). No text or code of those is included.
+
+Finding devices and adding routes over UDP port 48899 follows the UDP code
+of Beckhoff's own ADS library, https://github.com/Beckhoff/ADS (MIT
+License; AdsLib/AdsLib.cpp, Copyright (c) 2021 - 2022 Beckhoff Automation
+GmbH & Co. KG), which was read to write it. None of its code is included.
+
+Deleting routes over UDP port 48899 follows Apache PLC4X's description of
+ADS discovery, protocols/ads/src/main/resources/protocols/ads/
+ads-discovery.mspec in https://github.com/apache/plc4x (Apache License 2.0,
+The Apache Software Foundation), which was read to write it. None of its
+text is included.
+
+Beckhoff and TwinCAT are registered trademarks of, and licensed by,
+Beckhoff Automation GmbH. yaads is not made, endorsed or supported by
+Beckhoff.

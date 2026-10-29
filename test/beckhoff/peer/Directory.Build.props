@@ -1,0 +1,7 @@
+<Project>
+  <!-- In Docker, the build goes to a volume of its own, as the source is mounted read-only. -->
+  <PropertyGroup Condition="'$(PEER_BUILD)' != ''">
+    <BaseIntermediateOutputPath>$(PEER_BUILD)/obj/</BaseIntermediateOutputPath>
+    <BaseOutputPath>$(PEER_BUILD)/bin/</BaseOutputPath>
+  </PropertyGroup>
+</Project>
