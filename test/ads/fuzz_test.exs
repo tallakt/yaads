@@ -4,7 +4,19 @@ defmodule ADS.FuzzTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
 
-  alias ADS.{AMS, Command, DataType, Discovery, NetId, ReturnCode, Secure, Sum, Symbol, Type}
+  alias ADS.{
+    AMS,
+    Command,
+    DataType,
+    Discovery,
+    NetId,
+    ReturnCode,
+    Route,
+    Secure,
+    Sum,
+    Symbol,
+    Type
+  }
 
   defp u32, do: integer(0..0xFFFFFFFF)
 
@@ -523,6 +535,38 @@ defmodule ADS.FuzzTest do
                    tags,
                    &match?({id, value} when id in 0..65535 and is_binary(value), &1)
                  )
+
+        :error ->
+          :ok
+      end
+    end
+  end
+
+  ## Routes, as a system service lists them
+
+  defp route_entry do
+    gen all net_id <- binary(length: 6),
+            name <- string(:alphanumeric, max_length: 31),
+            address <- string(:alphanumeric, max_length: 79),
+            flags <- u32() do
+      %{name: name, net_id: NetId.to_string(net_id), address: address, flags: flags}
+    end
+  end
+
+  property "a route's entry decodes to the route" do
+    check all route <- route_entry() do
+      assert {:ok, %Route{} = decoded} = Route.decode(ADS.Test.FakePLC.route_entry(route))
+      assert Map.take(decoded, [:name, :net_id, :address, :flags]) == route
+    end
+  end
+
+  property "any bytes are a route or an error" do
+    corrupted = map(route_entry(), &corrupt(ADS.Test.FakePLC.route_entry(&1)))
+
+    check all bytes <- one_of([binary(max_length: 200), corrupted]) do
+      case Route.decode(bytes) do
+        {:ok, %Route{name: name, address: address}} ->
+          assert String.valid?(name) and String.valid?(address)
 
         :error ->
           :ok

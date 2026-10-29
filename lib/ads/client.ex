@@ -129,7 +129,7 @@ defmodule ADS.Client do
     * `:name` - to register the process
   """
 
-  alias ADS.{DataType, NetId, Sum, Symbol, Type}
+  alias ADS.{DataType, NetId, Route, Sum, Symbol, Type}
 
   @backoff {100, 5_000}
 
@@ -142,6 +142,14 @@ defmodule ADS.Client do
   @type_upload 0xF00E
   @upload_info2 0xF00F
   @type_by_name 0xF011
+
+  # SYSTEMSERVICE_ENUMREMOTE, on the system service's port: a route for each index.
+  @enum_remote 803
+  @system_service 10000
+
+  # Routes, so many and no more, of a system that never says it has none left; Beckhoff's
+  # Tc2_Utilities has 99 at most.
+  @max_routes 1000
 
   # What a device answers for a handle that has gone stale, or a variable whose type has changed,
   # as after an online change: the name is looked up again, once.
@@ -542,6 +550,37 @@ defmodule ADS.Client do
       {:ok, type} -> {:ok, type}
       :error -> {:error, :device_symbol_not_found}
       error -> error
+    end
+  end
+
+  @doc """
+  The routes of the system, as its system service lists them: the clients and systems it talks
+  to, by name, NetId and address (see `ADS.Route`). `port:` asks another AMS port than 10000.
+
+      {:ok, [%ADS.Route{name: "scada", net_id: "10.0.0.7.1.1", address: "10.0.0.7"} | _]} =
+        ADS.Client.routes(plc)
+  """
+  @spec routes(GenServer.server(), keyword) :: {:ok, [Route.t()]} | {:error, ADS.error()}
+  def routes(client, opts \\ []) do
+    opts = Keyword.put_new(opts, :port, @system_service)
+    each_route(client, opts, 0, [])
+  end
+
+  defp each_route(_client, _opts, @max_routes, routes), do: {:ok, Enum.reverse(routes)}
+
+  defp each_route(client, opts, index, routes) do
+    case request(client, {:read, @enum_remote, index, 2048}, opts) do
+      {:ok, data} ->
+        case Route.decode(data) do
+          {:ok, route} -> each_route(client, opts, index + 1, [route | routes])
+          :error -> {:error, {:invalid_response, data}}
+        end
+
+      {:error, :device_no_more_handles} ->
+        {:ok, Enum.reverse(routes)}
+
+      error ->
+        error
     end
   end
 

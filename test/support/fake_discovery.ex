@@ -6,8 +6,9 @@ defmodule ADS.Test.FakeDiscovery do
   #
   # Told to, it answers with junk first, from elsewhere, for another service, or not at all. With
   # plc:, a fake PLC started with routes:, the routes it adds let clients in to that PLC, and those
-  # it deletes no longer. It deletes a route by its name, as TwinCAT 3.1 4026 does, and one it
-  # hasn't is 0x70C, not found, as Beckhoff's own system service answers.
+  # it deletes no longer, and that PLC lists them, with system: true. It deletes a route by its
+  # name, as TwinCAT 3.1 4026 does; one it hasn't is 0x70C, not found, as Beckhoff's own system
+  # service answers, or what :missing is set to, such as 0x700 as TwinCAT answers.
   use GenServer
 
   alias ADS.Discovery
@@ -36,6 +37,9 @@ defmodule ADS.Test.FakeDiscovery do
        user: Keyword.get(opts, :user, "Administrator"),
        password: Keyword.get(opts, :password, "1"),
        plc: Keyword.get(opts, :plc),
+       # What it answers to a delete it does, and to one of a route it hasn't.
+       deleted: 0,
+       missing: 0x70C,
        routes: [],
        # :answer, :silent, :junk_first, :no_result, :twice
        mode: :answer
@@ -82,7 +86,8 @@ defmodule ADS.Test.FakeDiscovery do
       }
 
       if s.plc, do: :ok = ADS.Test.FakePLC.add_route(s.plc, route.net_id)
-      {[{1, <<0::32>>}], %{s | routes: [route | s.routes]}}
+      s = listed(%{s | routes: [route | s.routes]})
+      {[{1, <<0::32>>}], s}
     else
       {[{1, <<0x704::32-little>>}], s}
     end
@@ -97,7 +102,7 @@ defmodule ADS.Test.FakeDiscovery do
         {[{1, <<0x704::32-little>>}], s}
 
       gone == [] ->
-        {[{1, <<0x70C::32-little>>}], s}
+        {[{1, <<s.missing::32-little>>}], s}
 
       true ->
         # A NetId another route has still gets in.
@@ -105,8 +110,17 @@ defmodule ADS.Test.FakeDiscovery do
             s.plc != nil and not Enum.any?(routes, &(&1.net_id == net_id)),
             do: :ok = ADS.Test.FakePLC.delete_route(s.plc, net_id)
 
-        {[{1, <<0::32>>}], %{s | routes: routes}}
+        {[{1, <<s.deleted::32-little>>}], listed(%{s | routes: routes})}
     end
+  end
+
+  # The PLC's system service lists the routes there are, oldest first.
+  defp listed(%{plc: nil} = s), do: s
+
+  defp listed(s) do
+    entries = for r <- Enum.reverse(s.routes), do: Map.take(r, [:name, :net_id, :address])
+    :ok = ADS.Test.FakePLC.set(s.plc, :route_entries, entries)
+    s
   end
 
   defp cstring(value), do: value |> :binary.split(<<0>>) |> hd()

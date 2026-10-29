@@ -10,4 +10,5 @@ defmodule ADS.DocTest do
   doctest ADS.Type
   doctest ADS.DataType
   doctest ADS.Secure
+  doctest ADS.Route
 end

@@ -199,7 +199,10 @@ defmodule ADS.Discovery do
 
   `:ok` once the device has deleted it, or `{:error, reason}` as for `add_route/2`:
   `:device_not_found` from Beckhoff's own system service for a route it hasn't. Beckhoff's router
-  lets a connection that's open stay, its route deleted.
+  lets a connection that's open stay, its route deleted. TwinCAT 3.1 4026's answer doesn't tell
+  whether there was such a route: it has answered `:ok`, and `:device_error`, to deleting one it
+  hadn't. So `mix ads.route --delete` looks for the route among those `ADS.Client.routes/2` lists,
+  before and after, when this machine can see them.
   """
   @spec delete_route(String.t() | :inet.ip4_address(), keyword) :: :ok | {:error, term}
   def delete_route(host, opts), do: route(host, opts, @delete_route)

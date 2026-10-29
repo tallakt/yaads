@@ -130,8 +130,8 @@ Password:
 ```
 
 `mix help ads.route` has its options; `mix ads.route 10.0.0.5 --yes` asks only for the
-password, and `mix ads.route 10.0.0.5 --delete` deletes the route again, by its name, as TwinCAT
-does. A firewall on this machine that lets in only answers to what was sent, as ufw does,
+password, `mix ads.route 10.0.0.5 --delete` deletes the route again, by its name, as TwinCAT
+does, and `mix ads.route 10.0.0.5 --list` lists the PLC's routes, through this machine's own. A firewall on this machine that lets in only answers to what was sent, as ufw does,
 drops the answers to a broadcast; a PLC asked by its address answers through it.
 
 `ADS.Discovery` does the same from code, over UDP port 48899, as TwinCAT's own Broadcast Search
@@ -148,6 +148,10 @@ and Add Route do:
 
 # and gone again
 :ok = ADS.Discovery.delete_route("10.0.0.5", password: "1")
+
+# the routes it has, over a connection of the client's
+{:ok, [%ADS.Route{name: "SCADA", net_id: "10.0.0.7.1.1", address: "10.0.0.7"} | _]} =
+  ADS.Client.routes(plc)
 ```
 
 `add_route/2` adds a route for the NetId the client is to have, `local_net_id:` in
@@ -157,7 +161,9 @@ Beckhoff's manuals say only that discovery uses UDP 48899; what goes in it follo
 ADS library ([Beckhoff/ADS](https://github.com/Beckhoff/ADS), MIT License), and for deleting a
 route, which that library doesn't do, [Apache PLC4X](https://plc4x.apache.org)'s description of
 the protocol (Apache License 2.0). Beckhoff's own system service for .NET takes it, as
-`test/beckhoff` checks.
+`test/beckhoff` checks. Listing routes is ADS, not UDP: index group 803 of the system service,
+`SYSTEMSERVICE_ENUMREMOTE` in Beckhoff's Tc2_Utilities library, an entry for each route, laid out
+as TwinCAT 3.1 4026 answers, since Beckhoff doesn't document it (see `ADS.Route`).
 
 ## Secure ADS
 
@@ -212,7 +218,8 @@ that isn't one, or anyone on the network:
 ## What's missing
 
 - Only a client: no ADS server, and no AMS router for other clients to connect through.
-- Of UDP, only finding devices and adding and deleting routes; no ADS commands over UDP.
+- Of UDP, only finding devices and adding and deleting routes; no ADS commands over UDP. Routes are
+  listed over a connection of the client's, so only through a route that's there.
 - No calling methods of function blocks, RPC, though their descriptions are read.
 - Against a real PLC, only reading has been tried, and Secure ADS only as far as a route.
 

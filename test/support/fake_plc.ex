@@ -123,6 +123,8 @@ defmodule ADS.Test.FakePLC do
        mute: nil,
        sum: Keyword.get(opts, :sum, true),
        system: Keyword.get(opts, :system, false),
+       # With system:, the routes its system service lists, each %{name, net_id, address, flags}.
+       route_entries: Keyword.get(opts, :route_entries, []),
        silent: false
      }}
   end
@@ -226,7 +228,7 @@ defmodule ADS.Test.FakePLC do
         {:reply, {:error_code, 0x7}, s}
 
       s.system and packet.target_port == 10_000 ->
-        {:reply, system(packet), s}
+        {:reply, system(s, packet), s}
 
       packet.target_port != 851 ->
         {:reply, {:error_code, 0x6}, s}
@@ -306,8 +308,30 @@ defmodule ADS.Test.FakePLC do
     end
   end
 
-  defp system(%{command: 4}), do: {:ok, <<0::32, 5::16-little, 0::16>>}
-  defp system(_packet), do: {:ok, <<0x701::32-little>>}
+  defp system(_s, %{command: 4}), do: {:ok, <<0::32, 5::16-little, 0::16>>}
+
+  # Its routes, by index, as TwinCAT 3.1 4026 lists them, and 0x716 after the last.
+  defp system(s, %{command: 2, data: <<803::32-little, index::32-little, _length::32-little>>}) do
+    case Enum.at(s.route_entries, index) do
+      nil ->
+        {:ok, <<0x716::32-little, 0::32>>}
+
+      route ->
+        entry = route_entry(route)
+        {:ok, <<0::32, byte_size(entry)::32-little, entry::binary>>}
+    end
+  end
+
+  defp system(_s, _packet), do: {:ok, <<0x701::32-little>>}
+
+  def route_entry(route) do
+    address = route.address <> <<0>>
+    name = route.name <> <<0>>
+
+    <<ADS.NetId.parse!(route.net_id)::binary, 1::16-little, Map.get(route, :flags, 0)::32-little,
+      60_000::32-little, 0::128, byte_size(address)::32-little, byte_size(name)::32-little, 0::32,
+      address::binary, name::binary>>
+  end
 
   # The commands, each giving the data of its response, and the device as it is after.
   defp command(s, _pid, %{command: 1}),

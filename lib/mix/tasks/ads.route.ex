@@ -43,8 +43,12 @@ defmodule Mix.Tasks.Ads.Route do
       every network this machine is on)
     * `--yes`, `-y` - take what's in brackets without asking
     * `--no-connect` - don't connect after
+    * `--list` - list the PLC's routes rather than add one, through this machine's route to it,
+      which it needs; no login is asked for
     * `--delete` - delete the route rather than add it, asked for as when adding it, and with no
-      connecting after; the route of the name, which TwinCAT deletes by, as it was added
+      connecting after; the route of the name, which TwinCAT deletes by, as it was added. If this
+      machine has a route there, the name is looked for among the PLC's routes first, and nothing
+      is sent if it isn't one of them; and after, as TwinCAT's answer doesn't tell
     * `--timeout` - how long to wait for answers over UDP, in ms (default 2000 for the search,
       5000 otherwise)
     * `--tcp-port`, `--udp-port`, `--ams-port` - if not 48898, 48899 and 851
@@ -52,7 +56,7 @@ defmodule Mix.Tasks.Ads.Route do
 
   use Mix.Task
 
-  alias ADS.{Client, Discovery, NetId}
+  alias ADS.{Client, Discovery, NetId, Route}
 
   @requirements ["app.config"]
 
@@ -66,6 +70,7 @@ defmodule Mix.Tasks.Ads.Route do
     yes: :boolean,
     connect: :boolean,
     delete: :boolean,
+    list: :boolean,
     timeout: :integer,
     tcp_port: :integer,
     udp_port: :integer,
@@ -81,6 +86,13 @@ defmodule Mix.Tasks.Ads.Route do
     local = local_address!(device.address, opts)
     local_net_id = local |> NetId.from_ip() |> NetId.to_string()
 
+    if opts[:list],
+      do: list!(device, local_net_id, opts),
+      else: change!(device, local_net_id, opts)
+  end
+
+  # The route added or deleted, as asked for.
+  defp change!(device, local_net_id, opts) do
     user = ask(opts, :user, "User", "Administrator")
     password = opts[:password] || password()
     net_id = ask(opts, :net_id, "This machine's NetId", local_net_id, &net_id/1)
@@ -91,9 +103,8 @@ defmodule Mix.Tasks.Ads.Route do
         Keyword.take(opts, [:address]) ++ udp(opts)
 
     if opts[:delete] do
-      Mix.shell().info("Deleting the route #{name} on #{label(device)}...")
-      route!(&Discovery.delete_route/2, device, route)
-      Mix.shell().info("Deleted.")
+      client = client(device, if(net_id != local_net_id, do: net_id), opts)
+      delete!(device, name, route, client)
     else
       Mix.shell().info("Adding a route on #{label(device)}...")
       route!(&Discovery.add_route/2, device, route)
@@ -105,6 +116,49 @@ defmodule Mix.Tasks.Ads.Route do
           {:ok, plc} = ADS.Client.start_link(#{Enum.map_join(client, ", ", &option/1)})
       """)
     end
+  end
+
+  # The device's routes, through this machine's route to it.
+  defp list!(device, local_net_id, opts) do
+    net_id = opts[:net_id] && ask(opts, :net_id, "This machine's NetId", nil, &net_id/1)
+
+    {:ok, client} =
+      Client.start_link(client(device, if(net_id != local_net_id, do: net_id), opts))
+
+    try do
+      case Client.routes(client) do
+        {:ok, routes} ->
+          Mix.shell().info(routes_table(device, routes))
+
+        {:error, reason} ->
+          Mix.raise(
+            "Couldn't list the routes of #{label(device)} (#{inspect(reason)}). " <>
+              "It lists them only to a client it has a route for."
+          )
+      end
+    after
+      Client.stop(client)
+    end
+  end
+
+  defp routes_table(device, []), do: "#{label(device)} has no routes."
+
+  defp routes_table(_device, routes) do
+    rows = for r <- routes, do: [r.name, r.net_id, r.address, flags(r)]
+    columns([["Name", "NetId", "Address", "Flags"] | rows])
+  end
+
+  # As 0x41 (temporary, ?): those Beckhoff names, and ? for the rest.
+  defp flags(%{flags: 0}), do: ""
+
+  defp flags(route) do
+    names =
+      Enum.map_join(Route.flags(route), ", ", fn
+        {:unknown, _bits} -> "?"
+        name -> name |> Atom.to_string() |> String.replace("_", " ")
+      end)
+
+    "0x#{Integer.to_string(route.flags, 16)} (#{names})"
   end
 
   defp parse!(argv) do
@@ -178,11 +232,13 @@ defmodule Mix.Tasks.Ads.Route do
 
   # A line for each device, numbered, in columns.
   defp table(devices) do
-    rows =
-      devices
-      |> Enum.with_index(1)
-      |> Enum.map(fn {d, i} -> ["#{i}", d.name || "-", ip(d.address), d.net_id] end)
+    devices
+    |> Enum.with_index(1)
+    |> Enum.map(fn {d, i} -> ["#{i}", d.name || "-", ip(d.address), d.net_id] end)
+    |> columns()
+  end
 
+  defp columns(rows) do
     widths = rows |> Enum.zip() |> Enum.map(fn column -> column |> Tuple.to_list() |> width() end)
 
     lines =
@@ -216,13 +272,88 @@ defmodule Mix.Tasks.Ads.Route do
 
   # The route added or deleted, or why not.
   defp route!(fun, device, route) do
-    case fun.(device.address, route) do
-      :ok -> :ok
-      {:error, :timeout} -> Mix.raise("No answer from #{label(device)} to the route.")
-      {:error, reason} -> Mix.raise(refused(device, reason))
-    end
+    with {:error, _} = error <- route(fun, device, route), do: fail!(device, error)
+  end
+
+  defp route(fun, device, route) do
+    fun.(device.address, route)
   rescue
     e in ArgumentError -> Mix.raise(Exception.message(e))
+  end
+
+  @spec fail!(map, {:error, term}) :: no_return
+  defp fail!(device, error), do: fail!(device, error, nil)
+
+  @spec fail!(map, {:error, term}, String.t() | nil) :: no_return
+
+  defp fail!(device, {:error, :timeout}, _why),
+    do: Mix.raise("No answer from #{label(device)} to the route.")
+
+  defp fail!(device, {:error, reason}, nil), do: Mix.raise(refused(device, reason))
+  defp fail!(device, {:error, reason}, why), do: Mix.raise(refused(device, reason) <> " " <> why)
+
+  # The route deleted, looked for first among the device's routes, if this machine can see them:
+  # TwinCAT 3.1 4026 answers :device_error for a route it hasn't, so that answer for a route that
+  # was there is looked into again.
+  defp delete!(device, name, route, client) do
+    before = routes(client)
+
+    _ =
+      with {:ok, routes} <- before,
+           false <- Enum.any?(routes, &(&1.name == name)),
+           do: Mix.raise("#{label(device)} has no route named #{name}; nothing deleted.")
+
+    Mix.shell().info("Deleting the route #{name} on #{label(device)}...")
+
+    case {route(&Discovery.delete_route/2, device, route), before} do
+      {answer, {:ok, _}} when answer in [:ok, {:error, :device_error}] ->
+        gone!(device, name, client, answer)
+
+      {:ok, _unseen} ->
+        Mix.shell().info(
+          "#{label(device)} answered :ok, but this machine has no route there to see its routes " <>
+            "with, so whether there was one named #{name} to delete isn't known."
+        )
+
+      {{:error, :device_error} = error, _unseen} ->
+        fail!(device, error, "TwinCAT answers so for a route it hasn't too.")
+
+      {error, _} ->
+        fail!(device, error)
+    end
+  end
+
+  # A route that was there before: gone after, as the routes say, or the device by closing on
+  # this machine, which it let in before. TwinCAT's answer alone doesn't tell.
+  defp gone!(device, name, client, answer) do
+    gone =
+      case routes(client) do
+        {:ok, routes} -> not Enum.any?(routes, &(&1.name == name))
+        {:error, :closed} -> true
+        {:error, _reason} -> false
+      end
+
+    cond do
+      not gone ->
+        fail!(device, {:error, :not_deleted}, "It answered #{inspect(answer)}, and has it still.")
+
+      answer == :ok ->
+        Mix.shell().info("Deleted.")
+
+      true ->
+        Mix.shell().info("Deleted, though #{label(device)} answered :device_error.")
+    end
+  end
+
+  # The device's routes, as this machine sees them, or why not.
+  defp routes(options) do
+    {:ok, client} = Client.start_link(options)
+
+    try do
+      Client.routes(client)
+    after
+      Client.stop(client)
+    end
   end
 
   # The client's options, as start_link/1 is to have them.

@@ -127,6 +127,39 @@ defmodule ADS.ClientTest do
     assert {:ok, {:struct, _, _}} = Client.type(client, "ST_Pump")
   end
 
+  test "the routes of the system, as its system service lists them, until it has no more" do
+    routes = [
+      %{name: "scada", net_id: "10.0.0.7.1.1", address: "10.0.0.7"},
+      %{name: "eng-pc", net_id: "10.0.0.8.1.1", address: "10.0.0.8", flags: 0x40}
+    ]
+
+    client = client(plc(system: true, route_entries: routes))
+
+    assert Client.routes(client) ==
+             {:ok,
+              [
+                %ADS.Route{
+                  name: "scada",
+                  net_id: "10.0.0.7.1.1",
+                  address: "10.0.0.7",
+                  transport: :tcp_ip,
+                  flags: 0,
+                  timeout: 60_000
+                },
+                %ADS.Route{
+                  name: "eng-pc",
+                  net_id: "10.0.0.8.1.1",
+                  address: "10.0.0.8",
+                  transport: :tcp_ip,
+                  flags: 0x40,
+                  timeout: 60_000
+                }
+              ]}
+
+    assert Client.routes(client(plc(system: true))) == {:ok, []}
+    assert Client.routes(client(plc())) == {:error, :target_port_not_found}
+  end
+
   test "by index group and offset, with a type" do
     client = client(plc())
     type = {:array, :int, [{1, 3}]}

@@ -55,7 +55,15 @@ defmodule ADS.MixProject do
       extras: ["README.md", "CHANGELOG.md", "LICENSE", "NOTICE"],
       source_ref: "v#{@version}",
       groups_for_modules: [
-        Client: [ADS, ADS.Client, ADS.Discovery, ADS.Symbol, ADS.DataType, ADS.ReturnCode],
+        Client: [
+          ADS,
+          ADS.Client,
+          ADS.Discovery,
+          ADS.Route,
+          ADS.Symbol,
+          ADS.DataType,
+          ADS.ReturnCode
+        ],
         Values: [ADS.Type],
         "Secure ADS": [ADS.Certificate, ADS.Secure],
         Encoding: [ADS.NetId, ADS.AMS, ADS.Command, ADS.Sum]

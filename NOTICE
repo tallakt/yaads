@@ -22,6 +22,10 @@ ads-discovery.mspec in https://github.com/apache/plc4x (Apache License 2.0,
 The Apache Software Foundation), which was read to write it. None of its
 text is included.
 
+Listing routes reads the index group SYSTEMSERVICE_ENUMREMOTE (803) of
+Beckhoff's Tc2_Utilities PLC library, as TwinCAT shows its constants; the
+layout of an entry is as a TwinCAT 3.1 4026 system answers.
+
 Beckhoff and TwinCAT are registered trademarks of, and licensed by,
 Beckhoff Automation GmbH. yaads is not made, endorsed or supported by
 Beckhoff.

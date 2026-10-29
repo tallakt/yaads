@@ -10,7 +10,7 @@ defmodule Mix.Tasks.Ads.RouteTest do
     on_exit(fn -> Mix.shell(Mix.Shell.IO) end)
 
     # A PLC that lets in only the clients it has routes for, which its UDP port adds.
-    plc = start_supervised!({FakePLC, routes: []})
+    plc = start_supervised!({FakePLC, routes: [], system: true})
     udp = start_supervised!({FakeDiscovery, plc: plc})
 
     ports =
@@ -128,6 +128,71 @@ defmodule Mix.Tasks.Ads.RouteTest do
     assert_raise Mix.Error, ~r/refused: :device_invalid_access/, fn ->
       run(~w(127.0.0.1 --delete --password 2 -y) ++ c.ports)
     end
+  end
+
+  test "with --list, the PLC's routes, through this machine's route, and no login asked for", c do
+    routes = [
+      %{name: "scada", net_id: "10.0.0.7.1.1", address: "10.0.0.7"},
+      %{name: "APPLICA-1", net_id: "127.0.0.1.1.1", address: "127.0.0.1", flags: 0x40},
+      %{name: "temp", net_id: "10.0.0.9.1.1", address: "10.0.0.9", flags: 0x5}
+    ]
+
+    plc = start_supervised!({FakePLC, system: true, route_entries: routes}, id: :listing)
+    ports = ~w(--udp-port #{FakeDiscovery.port(c.udp)} --tcp-port #{FakePLC.port(plc)})
+
+    assert [{:info, table}] = run(~w(127.0.0.1 --list) ++ ports)
+
+    assert String.split(table, "\n", trim: true) == [
+             "  Name       NetId          Address    Flags",
+             "  scada      10.0.0.7.1.1   10.0.0.7",
+             "  APPLICA-1  127.0.0.1.1.1  127.0.0.1  0x40 (?)",
+             "  temp       10.0.0.9.1.1   10.0.0.9   0x5 (temporary, no override)"
+           ]
+
+    # Without a route there, nothing can be listed.
+    assert_raise Mix.Error,
+                 ~r/Couldn't list the routes of CX-FAKE \(127.0.0.1\) \(:closed\)/,
+                 fn ->
+                   run(~w(127.0.0.1 --list) ++ c.ports)
+                 end
+  end
+
+  test "a delete looks for the route first, and :device_error is the error unless it was there",
+       c do
+    add = ~w(127.0.0.1 --password 1 -y --no-connect)
+
+    # There, and gone after, though the answer was :device_error.
+    _ = run(add ++ c.ports)
+    :ok = FakeDiscovery.set(c.udp, :deleted, 0x700)
+
+    assert List.last(run(~w(127.0.0.1 --delete --password 1 -y) ++ c.ports)) ==
+             {:info, "Deleted, though CX-FAKE (127.0.0.1) answered :device_error."}
+
+    assert FakeDiscovery.routes(c.udp) == []
+
+    # Not among the routes this machine sees there: nothing is sent.
+    _ = run(add ++ ~w(--name plain) ++ c.ports)
+
+    assert_raise Mix.Error, ~r/has no route named nothing; nothing deleted/, fn ->
+      run(~w(127.0.0.1 --delete --password 1 -y --name nothing) ++ c.ports)
+    end
+
+    assert [%{name: "plain"}] = FakeDiscovery.routes(c.udp)
+
+    # With no route there for this machine, nothing to look with: the answer is as it comes, and
+    # :ok doesn't tell whether there was one to delete.
+    :ok = FakeDiscovery.set(c.udp, :deleted, 0)
+    _ = run(~w(127.0.0.1 --delete --password 1 -y --name plain) ++ c.ports)
+    :ok = FakeDiscovery.set(c.udp, :missing, 0)
+
+    assert {:info, "CX-FAKE (127.0.0.1) answered :ok, but this machine has no route there" <> _} =
+             List.last(run(~w(127.0.0.1 --delete --password 1 -y --name plain) ++ c.ports))
+
+    :ok = FakeDiscovery.set(c.udp, :missing, 0x700)
+
+    assert_raise Mix.Error,
+                 ~r/refused: :device_error. TwinCAT answers so for a route it hasn't/,
+                 fn -> run(~w(127.0.0.1 --delete --password 1 -y --name plain) ++ c.ports) end
   end
 
   test "a wrong password is refused, and no route added", c do
