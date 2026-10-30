@@ -62,7 +62,10 @@ jobs:
       - name: Install dependencies
         run: mix deps.get
 
+      # The formatter lays out some lines differently from one Elixir version to the next, so the
+      # code is held to the newest's.
       - name: Check formatting
+        if: matrix.newest
         run: mix format --check-formatted
 
       - name: Compile (warnings as errors)
