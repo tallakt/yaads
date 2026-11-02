@@ -19,7 +19,7 @@ process.on("unhandledRejection", fail);
 
 const WRITES = {
   "MAIN.nSpeed": -1234,
-  "MAIN.sName": "Tank 2",
+  "MAIN.sName": "Tank € 2",
   "MAIN.aValues": [5, 4, 3, 2, 1],
   "MAIN.stPump": { nSpeed: 9, fTemp: 0.25, bRunning: false, eMode: "eManual", sTag: "T9" },
   "MAIN.eMode": "eAuto",

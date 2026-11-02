@@ -22,7 +22,7 @@ defmodule ADS.NodeClientTest do
     "MAIN.nSpeed" => 1500,
     "MAIN.bOn" => true,
     "MAIN.fTemp" => 21.5,
-    "MAIN.sName" => "Pump 1",
+    "MAIN.sName" => "Pump € 1",
     "MAIN.wsText" => "Grüße",
     "MAIN.aValues" => [1, 2, 3, 4, 5],
     "MAIN.stPump" => %{
@@ -116,7 +116,8 @@ defmodule ADS.NodeClientTest do
     step!(node)
     assert line!(node) == "written"
     assert FakePLC.get(plc, "MAIN.nSpeed") == -1234
-    assert FakePLC.get(plc, "MAIN.sName") == "Tank 2"
+    # ads-client writes a STRING in Windows-1252, as yaads reads it
+    assert FakePLC.get(plc, "MAIN.sName") == "Tank € 2"
     assert FakePLC.get(plc, "MAIN.aValues") == [5, 4, 3, 2, 1]
     assert FakePLC.get(plc, "MAIN.eMode") == "eAuto"
     assert FakePLC.get(plc, "GVL.sUtf8") == "½ € ¾"
