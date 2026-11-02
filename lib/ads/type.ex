@@ -517,7 +517,8 @@ defmodule ADS.Type do
   def decode(type, bytes) when is_binary(bytes) do
     if byte_size(bytes) == size(type), do: {:ok, value(type, bytes)}, else: :error
   catch
-    # A member that doesn't fit its structure, in a type from a device's description.
+    # A member that doesn't fit its structure, or an array of more elements of no bytes than
+    # would fit in memory, in a type from a device's description.
     :invalid -> :error
   end
 
@@ -634,8 +635,16 @@ defmodule ADS.Type do
     end
   end
 
+  # Elements of no bytes are as many as the array says, which the bytes don't bound as they do
+  # others: so many and no more, as a device's description may say billions.
+  @max_empty_elements 1_000_000
+
+  @doc false
+  def max_empty_elements, do: @max_empty_elements
+
   defp elements(type, bytes, n) do
     case size(type) do
+      0 when n > @max_empty_elements -> throw(:invalid)
       0 -> List.duplicate(value(type, <<>>), n)
       size -> for <<part::binary-size(size) <- bytes>>, do: value(type, part)
     end

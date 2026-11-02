@@ -277,6 +277,7 @@ that isn't one, or anyone on the network:
 | Notifications for handles the client never had | it asks once for each to be deleted, up to 1000, and drops the rest |
 | Requests addressed to the client | each answered as a service it doesn't support |
 | Descriptions of symbols and types that don't add up | read as far as they do; a type that can't be made out is its bytes, `{:raw, size}` |
+| An array of billions of elements of no bytes, which the data doesn't bound | a million at most; one of more is its bytes, none |
 | A notification flagged as a response | taken as a notification, as the client sends none |
 | UDP datagrams from elsewhere than the device asked, or that aren't its answer | passed over; and nothing the client sends is empty, which stopped older TwinCAT routers |
 

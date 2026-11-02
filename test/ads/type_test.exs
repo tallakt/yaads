@@ -153,6 +153,16 @@ defmodule ADS.TypeTest do
     assert Type.encode(:ltime_of_day, 1) == <<1, 0, 0, 0, 0, 0, 0, 0>>
   end
 
+  test "an array of elements of no bytes, as many as it says, up to a million" do
+    assert Type.decode({:array, {:raw, 0}, [{1, 3}]}, <<>>) == {:ok, [<<>>, <<>>, <<>>]}
+    assert {:ok, list} = Type.decode({:array, {:raw, 0}, [{1, 1000}, {1, 1000}]}, <<>>)
+    assert length(list) == 1000
+
+    # as a device's description may say, which would take more memory than there is
+    assert Type.decode({:array, {:raw, 0}, [{2, 5}, {2, 486_539_266}]}, <<>>) == :error
+    assert Type.decode({:array, {:array, {:raw, 0}, [{0, 2_000_000}]}, [{1, 2}]}, <<>>) == :error
+  end
+
   test "arrays, a list for each dimension" do
     type = {:array, :int, [{1, 2}, {-1, 1}]}
     assert Type.size(type) == 12

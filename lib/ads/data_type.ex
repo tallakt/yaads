@@ -350,10 +350,14 @@ defmodule ADS.DataType do
     end
   end
 
+  # Elements of no bytes, so many and no more, as ADS.Type decodes them; more are the array's
+  # bytes, none.
   defp array_of(t, dims, n, resolve) do
-    if n > 0 and rem(t.size, n) == 0,
-      do: {:array, named(t.type, div(t.size, n), t.data_type, resolve), dims},
-      else: {:raw, t.size}
+    cond do
+      n <= 0 or rem(t.size, n) != 0 -> {:raw, t.size}
+      t.size == 0 and n > ADS.Type.max_empty_elements() -> {:raw, 0}
+      true -> {:array, named(t.type, div(t.size, n), t.data_type, resolve), dims}
+    end
   end
 
   # The type of a name, of the size it must be: built in, from resolve, or by its data type id.

@@ -184,6 +184,14 @@ defmodule ADS.SymbolTest do
 
     assert DataType.to_type(array, resolve) == {:array, {:struct, 4, [{"n", 0, :dint}]}, [{0, 1}]}
 
+    # elements of no bytes, billions of them as a device may say, are the array's bytes, none
+    assert {:ok, empty} =
+             DataType.decode(
+               data_type("ARRAY OF X", "X", 0, 0, 65, array: [{2, 4}, {2, 486_539_265}])
+             )
+
+    assert DataType.to_type(empty, &resolve_none/2) == {:raw, 0}
+
     assert {:ok, ints} =
              DataType.decode(
                data_type("ARRAY [-1..1, 1..2] OF INT", "INT", 12, 0, 2, array: [{-1, 3}, {1, 2}])
