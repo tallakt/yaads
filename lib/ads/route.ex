@@ -20,10 +20,11 @@ defmodule ADS.Route do
 
   Of the flags, Beckhoff names `0x1`, temporary, `0x2`, dynamic, a host name rather than an
   address, and `0x4`, not to be overridden (see `flags/1`); TwinCAT sets others as well, such as
-  `0x8` and `0x40`, which it doesn't name. The strings are in Windows-1252.
+  `0x8` and `0x40`, which it doesn't name. The strings are in the system's code page, Windows-1252
+  unless told otherwise (see `ADS.Codepage`).
   """
 
-  alias ADS.{NetId, Secure}
+  alias ADS.{Codepage, NetId}
 
   defstruct name: "", net_id: "", address: "", transport: :tcp_ip, flags: 0, timeout: 0
 
@@ -62,27 +63,30 @@ defmodule ADS.Route do
       {:ok, %ADS.Route{name: "scada", net_id: "10.0.0.7.1.1", address: "10.0.0.7",
                        transport: :tcp_ip, flags: 0, timeout: 60_000}}
   """
-  @spec decode(binary) :: {:ok, t} | :error
+  @spec decode(binary, Codepage.t()) :: {:ok, t} | :error
+  def decode(bytes, codepage \\ Codepage.default())
+
   def decode(
         <<net_id::binary-6, transport::16-little, flags::32-little, timeout::32-little,
           _reserved::binary-16, address_length::32-little, name_length::32-little,
-          third_length::32-little, rest::binary>>
+          third_length::32-little, rest::binary>>,
+        codepage
       )
       when address_length + name_length + third_length <= byte_size(rest) do
     <<address::binary-size(address_length), name::binary-size(name_length), _::binary>> = rest
 
     {:ok,
      %__MODULE__{
-       name: string(name),
+       name: string(name, codepage),
        net_id: NetId.to_string(net_id),
-       address: string(address),
+       address: string(address, codepage),
        transport: Map.get(@transports, transport, transport),
        flags: flags,
        timeout: timeout
      }}
   end
 
-  def decode(_bytes), do: :error
+  def decode(_bytes, _codepage), do: :error
 
   # ROUTE_FLAG_TEMPORARY, ROUTE_FLAG_DYNAMIC and ROUTE_FLAG_NOOVERRIDE, in Beckhoff's Tc2_Utilities.
   @flags [temporary: 0x1, dynamic: 0x2, no_override: 0x4]
@@ -100,5 +104,6 @@ defmodule ADS.Route do
     if rest == 0, do: named, else: named ++ [{:unknown, rest}]
   end
 
-  defp string(bytes), do: bytes |> :binary.split(<<0>>) |> hd() |> Secure.ansi()
+  defp string(bytes, codepage),
+    do: bytes |> :binary.split(<<0>>) |> hd() |> Codepage.decode(codepage)
 end

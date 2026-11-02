@@ -59,7 +59,7 @@ also reaches data by index group and offset:
 | BOOL, BIT | `true`, `false` |
 | SINT to ULINT, BYTE to LWORD | an integer |
 | REAL, LREAL | a float, or `:nan`, `:infinity`, `:neg_infinity` |
-| STRING(n), WSTRING(n) | a string; STRING in Latin-1 unless its attribute `TcEncoding` says UTF-8, WSTRING in UCS-2 |
+| STRING(n), WSTRING(n) | a string; STRING in Windows-1252, or the [code page](#code-pages) given, unless its attribute `TcEncoding` says UTF-8, WSTRING in UCS-2 |
 | TIME, LTIME | an integer of ms, of ns |
 | DATE, DATE_AND_TIME, TIME_OF_DAY, and their L versions | `Date`, `NaiveDateTime`, `Time` |
 | ARRAY | a list, nested for each dimension |
@@ -131,8 +131,29 @@ Password:
 
 `mix help ads.route` has its options; `mix ads.route 10.0.0.5 --yes` asks only for the
 password, `mix ads.route 10.0.0.5 --delete` deletes the route again, by its name, as TwinCAT
-does, and `mix ads.route 10.0.0.5 --list` lists the PLC's routes, through this machine's own. A firewall on this machine that lets in only answers to what was sent, as ufw does,
-drops the answers to a broadcast; a PLC asked by its address answers through it.
+does, and sees that the PLC answers this machine before and no longer after, and
+`mix ads.route 10.0.0.5 --list` lists the PLC's routes, through this machine's own. A firewall on
+this machine that lets in only answers to what was sent, as ufw does, drops the answers to a
+broadcast; a PLC asked by its address answers through it.
+
+`mix ads.info` finds a PLC the same way, and shows what its system service answers, through this
+machine's route:
+
+```
+$ mix ads.info 10.0.0.5
+CX-1234AB (10.0.0.5), 5.36.69.176.1.1
+
+  TwinCAT System 3.1.4026, in run
+
+  Host name  CX-1234AB
+
+  Adapter                                       MAC                DHCP  Addresses
+  TwinCAT-Intel PCI Ethernet Adapter (Gigabit)  00:01:05:76:34:AE  no    10.0.0.5/24
+                                                                         gateway 10.0.0.1
+```
+
+`--state`, `--host-name` and `--adapters` show only those, and `--resolve NAME` looks a host name
+up on the PLC, with its DNS and hosts file.
 
 `ADS.Discovery` does the same from code, over UDP port 48899, as TwinCAT's own Broadcast Search
 and Add Route do:
@@ -152,6 +173,12 @@ and Add Route do:
 # the routes it has, over a connection of the client's
 {:ok, [%ADS.Route{name: "SCADA", net_id: "10.0.0.7.1.1", address: "10.0.0.7"} | _]} =
   ADS.Client.routes(plc)
+
+# and its host name, its network adapters, and an address it looks up, the same way
+{:ok, "CX-1234AB"} = ADS.Client.host_name(plc)
+{:ok, [%ADS.Adapter{mac: "00:01:05:76:34:AE", addresses: [{{10, 0, 0, 5}, _mask}]} | _]} =
+  ADS.Client.adapters(plc)
+{:ok, {10, 0, 0, 7}} = ADS.Client.host_address(plc, "scada-1")
 ```
 
 `add_route/2` adds a route for the NetId the client is to have, `local_net_id:` in
@@ -163,7 +190,45 @@ route, which that library doesn't do, [Apache PLC4X](https://plc4x.apache.org)'s
 the protocol (Apache License 2.0). Beckhoff's own system service for .NET takes it, as
 `test/beckhoff` checks. Listing routes is ADS, not UDP: index group 803 of the system service,
 `SYSTEMSERVICE_ENUMREMOTE` in Beckhoff's Tc2_Utilities library, an entry for each route, laid out
-as TwinCAT 3.1 4026 answers, since Beckhoff doesn't document it (see `ADS.Route`).
+as TwinCAT 3.1 4026 answers, since Beckhoff doesn't document it (see `ADS.Route`). So are the
+host name, 702, the adapters, 701 with offset 1, and an address, 701 with offset 4: the host
+name's as [log4TC](https://github.com/mbc-engineering/log4TC) (Apache License 2.0) reads it, the
+adapters Windows' `IP_ADAPTER_INFO`, as TwinCAT 3.1 4026 lays it out (see `ADS.Adapter`).
+
+## Code pages
+
+A PLC's STRINGs, the names and comments of its symbols and types, and its system service's
+strings, such as its host name, routes and adapters, are of one byte to a character, in the code
+page of the Windows it runs on: Windows-1252 on Western Windows, which yaads takes unless told
+otherwise, as Beckhoff's own libraries do. What yaads gives back is UTF-8, always; a byte the code
+page has no character for comes out as U+FFFD, and writing a character it doesn't have raises
+`ArgumentError`. A STRING with the attribute `TcEncoding := 'UTF-8'` is UTF-8 whatever the code
+page.
+
+```elixir
+{:ok, plc} = ADS.Client.start_link(host: "10.0.0.5", net_id: "5.36.69.176.1.1", codepage: :windows_1251)
+{:ok, "Насос 1"} = ADS.Client.read(plc, "MAIN.sName")
+
+{:ok, devices} = ADS.Discovery.search(codepage: :windows_1251)
+```
+
+and `--codepage windows-1251` to the mix tasks. [Codepagex](https://hex.pm/packages/codepagex)
+converts them, with these compiled into yaads: `:windows_874` and `:windows_1250` to
+`:windows_1258`, Windows' code pages of one byte to a character, and `:ascii` and `:iso_8859_1`.
+An application adds others, such as those of Asian Windows, which take long to compile, in its
+config, and recompiles yaads:
+
+```elixir
+# config/config.exs
+config :yaads, :codepages, [:windows_932, :windows_936]
+```
+
+```
+$ mix deps.compile yaads --force
+```
+
+Any encoding the application has configured Codepagex itself with is taken as well (see
+`ADS.Codepage`).
 
 ## Secure ADS
 

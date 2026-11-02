@@ -8,7 +8,7 @@ defmodule ADS.Type do
   | BYTE, WORD, DWORD, LWORD | `:byte`, `:word`, `:dword`, `:lword` | an integer |
   | SINT, USINT, INT, UINT, DINT, UDINT, LINT, ULINT | `:sint`, `:usint`, `:int`, ... `:ulint` | an integer |
   | REAL, LREAL | `:real`, `:lreal` | a float, or `:nan`, `:infinity`, `:neg_infinity` |
-  | STRING(n) | `{:string, n}`, or `{:string, n, :utf8}` | a string |
+  | STRING(n) | `{:string, n}`, `{:string, n, :utf8}`, or `{:string, n, codepage}` | a string |
   | WSTRING(n) | `{:wstring, n}` | a string |
   | TIME, LTIME | `:time`, `:ltime` | an integer of ms, or of ns |
   | TIME_OF_DAY, LTIME_OF_DAY | `:time_of_day`, `:ltime_of_day` | a `Time` |
@@ -29,8 +29,9 @@ defmodule ADS.Type do
       {:ok, {:array, :lreal, [{1, 3}]}}
 
   Numbers are little-endian, as everything in ADS. A STRING(n) takes n + 1 bytes, the last for the
-  zero that ends it, and holds Latin-1 unless declared with the attribute `'TcEncoding' := 'UTF-8'`;
-  a WSTRING(n) takes 2(n + 1), in UCS-2, which has no characters past U+FFFF. TIME counts ms and
+  zero that ends it, and holds Windows-1252, as Beckhoff's own libraries read it, unless declared
+  with the attribute `'TcEncoding' := 'UTF-8'`, or of another code page, `{:string, n, codepage}`
+  (see `ADS.Codepage` and `codepage/2`); what comes out is UTF-8, always. A WSTRING(n) takes 2(n + 1), in UCS-2, which has no characters past U+FFFF. TIME counts ms and
   LTIME ns; TIME_OF_DAY ms since midnight and LTIME_OF_DAY ns; DATE and DATE_AND_TIME seconds since
   1970, and LDATE and LDATE_AND_TIME ns, as signed 64-bit numbers. A PLC's dates and times have no
   time zone, so they are naive here; LDATE_AND_TIME and LTIME_OF_DAY keep microseconds, dropping
@@ -45,6 +46,8 @@ defmodule ADS.Type do
   `encode/2` raises `ArgumentError` for a value that doesn't fit its type, such as 70000 as an INT
   or a struct with a member missing. `decode/2` never raises for any bytes of the right size.
   """
+
+  alias ADS.Codepage
 
   @type t ::
           :bool
@@ -72,7 +75,7 @@ defmodule ADS.Type do
           | :ldate_and_time
           | :ltime_of_day
           | {:string, non_neg_integer}
-          | {:string, non_neg_integer, :utf8}
+          | {:string, non_neg_integer, :utf8 | ADS.Codepage.t()}
           | {:wstring, non_neg_integer}
           | {:array, t, [{integer, integer}]}
           | {:struct, non_neg_integer, [member]}
@@ -203,11 +206,29 @@ defmodule ADS.Type do
   @day_ms 86_400_000
   @day_ns 86_400_000_000_000
 
+  @doc """
+  The type with its STRINGs in the code page, those that aren't of one already, nor UTF-8: as
+  `ADS.Client` reads and writes the PLC's with the code page it has.
+
+      iex> ADS.Type.codepage({:array, {:string, 10}, [{1, 2}]}, :windows_1251)
+      {:array, {:string, 10, :windows_1251}, [{1, 2}]}
+  """
+  @spec codepage(t, Codepage.t()) :: t
+  def codepage({:string, n}, codepage), do: {:string, n, codepage}
+  def codepage({:array, type, dims}, codepage), do: {:array, codepage(type, codepage), dims}
+
+  def codepage({kind, size, members}, codepage) when kind in [:struct, :union],
+    do:
+      {kind, size,
+       for({name, offset, type} <- members, do: {name, offset, codepage(type, codepage)})}
+
+  def codepage(type, _codepage), do: type
+
   @doc "The size of a type's values in bytes."
   @spec size(t) :: non_neg_integer
   def size(type) when is_map_key(@sizes, type), do: Map.fetch!(@sizes, type)
   def size({:string, n}), do: n + 1
-  def size({:string, n, :utf8}), do: n + 1
+  def size({:string, n, _encoding}), do: n + 1
   def size({:wstring, n}), do: 2 * (n + 1)
   def size({:array, type, dims}), do: count(dims) * size(type)
   def size({kind, size, _members}) when kind in [:struct, :union], do: size
@@ -459,7 +480,10 @@ defmodule ADS.Type do
 
   defp valid?(type) when is_atom(type), do: Map.has_key?(@sizes, type)
   defp valid?({kind, n}) when kind in [:string, :wstring], do: non_negative?(n)
-  defp valid?({:string, n, :utf8}), do: non_negative?(n)
+
+  defp valid?({:string, n, encoding}) when is_atom(encoding) or is_binary(encoding),
+    do: non_negative?(n)
+
   defp valid?({:raw, n}), do: non_negative?(n)
 
   defp valid?({:array, type, [_ | _] = dims}),
@@ -530,10 +554,12 @@ defmodule ADS.Type do
 
   defp value(:ltime_of_day, <<ns::64-little>>), do: ns
   # The last character is the zero that ends a string, whatever the bytes say: n at most.
-  defp value({:string, n}, bytes),
-    do: bytes |> cstring(n) |> :unicode.characters_to_binary(:latin1)
-
+  defp value({:string, n}, bytes), do: bytes |> cstring(n) |> Codepage.decode()
   defp value({:string, n, :utf8}, bytes), do: bytes |> cstring(n) |> utf8()
+
+  defp value({:string, n, codepage}, bytes),
+    do: bytes |> cstring(n) |> Codepage.decode(codepage)
+
   defp value({:wstring, n}, bytes), do: bytes |> binary_part(0, 2 * n) |> wcstring(0) |> ucs2()
   defp value({:array, type, dims}, bytes), do: nest(elements(type, bytes, count(dims)), dims)
 
@@ -705,17 +731,16 @@ defmodule ADS.Type do
   defp bytes(:ltime_of_day, ns) when is_integer(ns),
     do: <<fits!(ns, 0, 0xFFFFFFFFFFFFFFFF, :ltime_of_day)::64-little>>
 
-  defp bytes({:string, n}, string) when is_binary(string) do
-    case :unicode.characters_to_binary(string, :utf8, :latin1) do
-      latin1 when is_binary(latin1) -> pad(latin1, n, 1, {:string, n})
-      _ -> raise ArgumentError, "#{inspect(string)} has characters Latin-1 doesn't, for a STRING"
-    end
-  end
+  defp bytes({:string, n}, string) when is_binary(string),
+    do: string |> Codepage.encode!() |> pad(n, 1, {:string, n})
 
   defp bytes({:string, n, :utf8}, string) when is_binary(string) do
     if not String.valid?(string), do: raise(ArgumentError, "not UTF-8: #{inspect(string)}")
     pad(string, n, 1, {:string, n, :utf8})
   end
+
+  defp bytes({:string, n, codepage} = type, string) when is_binary(string),
+    do: string |> Codepage.encode!(codepage) |> pad(n, 1, type)
 
   defp bytes({:wstring, n}, string) when is_binary(string) do
     if not String.valid?(string) or Enum.any?(String.to_charlist(string), &(&1 > 0xFFFF)),

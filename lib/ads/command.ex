@@ -172,10 +172,11 @@ defmodule ADS.Command do
   def decode_response({:delete_notification, _}, <<0::32>>), do: :ok
   def decode_response(_request, data), do: {:error, {:invalid_response, data}}
 
-  # A device name: 16 bytes, up to the first zero, in Latin-1.
+  # A device name: 16 bytes, up to the first zero, in Windows-1252; ASCII, as devices name
+  # themselves.
   defp cstring(bytes) do
     [string | _] = :binary.split(bytes, <<0>>)
-    :unicode.characters_to_binary(string, :latin1)
+    ADS.Codepage.decode(string)
   end
 
   @doc """

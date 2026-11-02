@@ -11,4 +11,6 @@ defmodule ADS.DocTest do
   doctest ADS.DataType
   doctest ADS.Secure
   doctest ADS.Route
+  doctest ADS.Adapter
+  doctest ADS.Codepage
 end

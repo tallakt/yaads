@@ -125,6 +125,12 @@ defmodule ADS.Test.FakePLC do
        system: Keyword.get(opts, :system, false),
        # With system:, the routes its system service lists, each %{name, net_id, address, flags}.
        route_entries: Keyword.get(opts, :route_entries, []),
+       # With system:, its host name, its adapters, each as adapter_list/1 takes them, and the
+       # addresses of the host names it looks up.
+       host_name: Keyword.get(opts, :host_name, "CX-FAKE"),
+       codepage: Keyword.get(opts, :codepage, :windows_1252),
+       adapters: Keyword.get(opts, :adapters, []),
+       hosts: Keyword.get(opts, :hosts, %{"localhost" => {127, 0, 0, 1}}),
        silent: false
      }}
   end
@@ -308,6 +314,9 @@ defmodule ADS.Test.FakePLC do
     end
   end
 
+  defp system(_s, %{command: 1}),
+    do: {:ok, <<0::32, 3, 1, 4026::16-little, pad("TwinCAT System", 16)::binary>>}
+
   defp system(_s, %{command: 4}), do: {:ok, <<0::32, 5::16-little, 0::16>>}
 
   # Its routes, by index, as TwinCAT 3.1 4026 lists them, and 0x716 after the last.
@@ -322,7 +331,94 @@ defmodule ADS.Test.FakePLC do
     end
   end
 
+  # Its host name, as TwinCAT 3.1 4026 answers it: with a zero after, and 0x705 for a read of less.
+  defp system(s, %{command: 2, data: <<702::32-little, 0::32, length::32-little>>}) do
+    sized(ADS.Codepage.encode!(s.host_name, s.codepage) <> <<0>>, length)
+  end
+
+  # Its adapters: a read of 4 bytes answers the size of the list, one of less than that 0x705.
+  defp system(s, %{command: 2, data: <<701::32-little, 1::32-little, length::32-little>>}) do
+    list = adapter_list(s.adapters, s.codepage)
+    if length == 4, do: sized(<<byte_size(list)::32-little>>, 4), else: sized(list, length)
+  end
+
+  # The address of a host name, with or without a zero after it, or 0x70C for one it can't find.
+  defp system(s, %{
+         command: 9,
+         data:
+           <<701::32-little, 4::32-little, _read::32-little, _length::32-little, name::binary>>
+       }) do
+    case Map.fetch(s.hosts, name |> :binary.split(<<0>>) |> hd()) do
+      {:ok, {a, b, c, d}} -> {:ok, <<0::32, 4::32-little, a, b, c, d>>}
+      :error -> {:ok, <<0x70C::32-little, 0::32>>}
+    end
+  end
+
   defp system(_s, _packet), do: {:ok, <<0x701::32-little>>}
+
+  defp sized(data, length) when length >= byte_size(data),
+    do: {:ok, <<0::32, byte_size(data)::32-little, data::binary>>}
+
+  defp sized(_data, _length), do: {:ok, <<0x705::32-little, 0::32>>}
+
+  # A list of adapters as TwinCAT 3.1 4026 answers it, from maps of %{name, description, mac,
+  # index, type, dhcp, addresses: [{ip, mask}], gateways: [ip], dhcp_server}, each optional: each
+  # adapter of 648 bytes, then the addresses after its first, each linked by its offset in the list.
+  def adapter_list(adapters, codepage \\ :windows_1252) do
+    {list, _at} =
+      adapters
+      |> Enum.with_index()
+      |> Enum.reduce({<<>>, 0}, fn {adapter, i}, {list, at} ->
+        bytes = adapter(adapter, at, i == length(adapters) - 1, codepage)
+        {list <> bytes, at + byte_size(bytes)}
+      end)
+
+    list
+  end
+
+  defp adapter(adapter, at, last?, codepage) do
+    text = &ADS.Codepage.encode!(&1, codepage)
+
+    {first, more} = split(Map.get(adapter, :addresses, []))
+    more = addresses(more, at + 648)
+    next = if last?, do: 0, else: at + 648 + byte_size(more)
+    mac = Map.get(adapter, :mac, <<0, 1, 5, 0, 0, 1>>)
+    gateway = adapter |> Map.get(:gateways, []) |> List.first({0, 0, 0, 0})
+    dhcp_server = Map.get(adapter, :dhcp_server) || {0, 0, 0, 0}
+    linked = if more == "", do: 0, else: at + 648
+
+    <<next::32-little, 1::32-little, cstring(text.(Map.get(adapter, :name, "{0}")), 260)::binary,
+      cstring(text.(Map.get(adapter, :description, "Ethernet")), 132)::binary,
+      byte_size(mac)::32-little, mac::binary, 0::size(8 - byte_size(mac))-unit(8),
+      Map.get(adapter, :index, 1)::32-little, Map.get(adapter, :type, 6)::32-little,
+      if(Map.get(adapter, :dhcp, false), do: 1, else: 0)::32-little, 0::32,
+      address(first, linked)::binary, address({gateway, {255, 255, 255, 255}}, 0)::binary,
+      address({dhcp_server, {255, 255, 255, 255}}, 0)::binary, 0::32,
+      address({{0, 0, 0, 0}, {0, 0, 0, 0}}, 0)::binary,
+      address({{0, 0, 0, 0}, {0, 0, 0, 0}}, 0)::binary, 0::128, more::binary>>
+  end
+
+  defp split([]), do: {{{0, 0, 0, 0}, {0, 0, 0, 0}}, []}
+  defp split([first | more]), do: {first, more}
+
+  # The further addresses, after the adapter, each linking the next by its offset.
+  defp addresses(addresses, at) do
+    addresses
+    |> Enum.with_index()
+    |> Enum.map_join(fn {address, i} ->
+      next = if i == length(addresses) - 1, do: 0, else: at + 40 * (i + 1)
+      address(address, next)
+    end)
+  end
+
+  defp address({ip, mask}, next) do
+    <<next::32-little, cstring(ip_text(ip), 16)::binary, cstring(ip_text(mask), 16)::binary,
+      0::32>>
+  end
+
+  defp ip_text(ip), do: ip |> :inet.ntoa() |> List.to_string()
+
+  defp cstring(string, size), do: string <> :binary.copy(<<0>>, size - byte_size(string))
 
   def route_entry(route) do
     address = route.address <> <<0>>

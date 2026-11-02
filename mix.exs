@@ -8,7 +8,7 @@ defmodule ADS.MixProject do
     [
       app: :yaads,
       version: @version,
-      elixir: "~> 1.15",
+      elixir: "~> 1.16",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       elixirc_paths: if(Mix.env() == :test, do: ["lib", "test/support"], else: ["lib"]),
@@ -60,6 +60,8 @@ defmodule ADS.MixProject do
           ADS.Client,
           ADS.Discovery,
           ADS.Route,
+          ADS.Adapter,
+          ADS.Codepage,
           ADS.Symbol,
           ADS.DataType,
           ADS.ReturnCode
@@ -80,6 +82,7 @@ defmodule ADS.MixProject do
 
   defp deps do
     [
+      {:codepagex, "~> 0.3"},
       # Only for the fuzz and property tests.
       {:stream_data, "~> 1.1", only: :test},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},

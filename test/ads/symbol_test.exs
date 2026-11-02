@@ -55,11 +55,17 @@ defmodule ADS.SymbolTest do
     assert Symbol.flags(symbol) == [:type_guid, :read_only, :attributes]
   end
 
-  test "names in UTF-8 if they are, else in Latin-1" do
+  test "names in UTF-8 if they are, else in the code page, Windows-1252 unless told otherwise" do
     assert {:ok, %{comment: "Grüße"}} = Symbol.decode(symbol("a", "INT", comment: "Grüße"))
 
-    assert {:ok, %{comment: "Grüße"}} =
-             Symbol.decode(symbol("a", "INT", comment: <<"Gr", 0xFC, 0xDF, "e">>))
+    assert {:ok, %{comment: "Grüße €"}} =
+             Symbol.decode(symbol("a", "INT", comment: <<"Gr", 0xFC, 0xDF, "e ", 0x80>>))
+
+    assert {:ok, %{comment: "Насос"}} =
+             Symbol.decode(
+               symbol("a", "INT", comment: <<0xCD, 0xE0, 0xF1, 0xEE, 0xF1>>),
+               :windows_1251
+             )
   end
 
   test "an upload is entries one after another" do

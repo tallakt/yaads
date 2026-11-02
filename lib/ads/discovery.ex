@@ -41,7 +41,7 @@ defmodule ADS.Discovery do
 
   import Bitwise
 
-  alias ADS.{NetId, ReturnCode}
+  alias ADS.{Codepage, NetId, ReturnCode}
 
   @port 48899
   @cookie 0x71146603
@@ -102,10 +102,12 @@ defmodule ADS.Discovery do
       broadcast address of each network this machine is on)
     * `:port` - the UDP port (default 48899)
     * `:timeout` - how long to wait for answers, in ms (default 2000)
+    * `:codepage` - of the devices' names (default Windows-1252; see `ADS.Codepage`)
   """
   @spec search(keyword) :: {:ok, [device]} | {:error, :inet.posix()}
   def search(opts \\ []) do
-    check!(opts, [:to, :port, :timeout])
+    check!(opts, [:to, :port, :timeout, :codepage])
+    codepage = codepage!(opts)
     addresses = opts |> Keyword.get_lazy(:to, &broadcasts/0) |> Enum.map(&resolve/1)
     port = port!(opts)
     deadline = deadline(Keyword.get(opts, :timeout, 2000))
@@ -114,7 +116,9 @@ defmodule ADS.Discovery do
       try do
         request = encode(%{service: @info, net_id: <<0::48>>, port: 0, tags: []})
         for {:ok, ip} <- addresses, do: _ = :gen_udp.send(socket, ip, port, request)
-        {:ok, socket |> devices(port, deadline, []) |> Enum.uniq_by(&{&1.address, &1.net_id})}
+
+        {:ok,
+         socket |> devices(port, deadline, codepage, []) |> Enum.uniq_by(&{&1.address, &1.net_id})}
       after
         :gen_udp.close(socket)
       end
@@ -140,18 +144,22 @@ defmodule ADS.Discovery do
     Enum.uniq([{255, 255, 255, 255} | found])
   end
 
-  defp devices(_socket, _port, _deadline, devices) when length(devices) >= @max_devices,
-    do: Enum.reverse(devices)
+  defp devices(_socket, _port, _deadline, _codepage, devices)
+       when length(devices) >= @max_devices,
+       do: Enum.reverse(devices)
 
-  defp devices(socket, port, deadline, devices) do
+  defp devices(socket, port, deadline, codepage, devices) do
     with remaining when remaining > 0 <- deadline - now(),
          {:ok, {{_, _, _, _} = ip, ^port, data}} <- :gen_udp.recv(socket, 0, remaining) do
       case answer(data, @info) do
-        {:ok, answer} -> devices(socket, port, deadline, [device(ip, answer) | devices])
-        :error -> devices(socket, port, deadline, devices)
+        {:ok, answer} ->
+          devices(socket, port, deadline, codepage, [device(ip, answer, codepage) | devices])
+
+        :error ->
+          devices(socket, port, deadline, codepage, devices)
       end
     else
-      {:ok, _from_elsewhere} -> devices(socket, port, deadline, devices)
+      {:ok, _from_elsewhere} -> devices(socket, port, deadline, codepage, devices)
       _timeout_or_closed -> Enum.reverse(devices)
     end
   end
@@ -161,16 +169,18 @@ defmodule ADS.Discovery do
 
     * `:port` - the UDP port (default 48899)
     * `:timeout` - in ms (default 5000)
+    * `:codepage` - of its name (default Windows-1252; see `ADS.Codepage`)
   """
   @spec info(String.t() | :inet.ip4_address(), keyword) :: {:ok, device} | {:error, term}
   def info(host, opts \\ []) do
-    check!(opts, [:port, :timeout])
+    check!(opts, [:port, :timeout, :codepage])
+    codepage = codepage!(opts)
 
     request = fn _local -> %{service: @info, net_id: <<0::48>>, port: 0, tags: []} end
 
     with {:ok, ip} <- resolve(host),
          {:ok, answer, _data} <- exchange(ip, opts, request),
-         do: {:ok, device(ip, answer)}
+         do: {:ok, device(ip, answer, codepage)}
   end
 
   @doc """
@@ -185,6 +195,7 @@ defmodule ADS.Discovery do
     * `:name` - the route's name (default the address)
     * `:port` - the UDP port (default 48899)
     * `:timeout` - in ms (default 5000)
+    * `:codepage` - of the strings (default Windows-1252; see `ADS.Codepage`)
 
   `:ok` once the device has added the route, or `{:error, reason}`: an ADS return code if it
   wouldn't, such as for a wrong password, or `:timeout`.
@@ -201,15 +212,16 @@ defmodule ADS.Discovery do
   `:device_not_found` from Beckhoff's own system service for a route it hasn't. Beckhoff's router
   lets a connection that's open stay, its route deleted. TwinCAT 3.1 4026's answer doesn't tell
   whether there was such a route: it has answered `:ok`, and `:device_error`, to deleting one it
-  hadn't. So `mix ads.route --delete` looks for the route among those `ADS.Client.routes/2` lists,
-  before and after, when this machine can see them.
+  hadn't. So `mix ads.route --delete` sees that the device answers this machine over ADS before,
+  and not after, on a new connection.
   """
   @spec delete_route(String.t() | :inet.ip4_address(), keyword) :: :ok | {:error, term}
   def delete_route(host, opts), do: route(host, opts, @delete_route)
 
   # A request to add or delete a route, which differ only in their service.
   defp route(host, opts, service) do
-    check!(opts, [:password, :user, :net_id, :address, :name, :port, :timeout])
+    check!(opts, [:password, :user, :net_id, :address, :name, :port, :timeout, :codepage])
+    codepage = codepage!(opts)
     password = Keyword.get(opts, :password) || raise ArgumentError, "password: is required"
     user = Keyword.get(opts, :user, "Administrator")
     net_id = if net_id = opts[:net_id], do: NetId.parse!(net_id)
@@ -222,11 +234,11 @@ defmodule ADS.Discovery do
         net_id: net_id || NetId.from_ip(local),
         port: 0,
         tags: [
-          {@route_name, string!(Keyword.get(opts, :name, address))},
+          {@route_name, string!(Keyword.get(opts, :name, address), codepage)},
           {@net_id, net_id || NetId.from_ip(local)},
-          {@user, string!(user)},
-          {@password, string!(password)},
-          {@computer_name, string!(address)}
+          {@user, string!(user, codepage)},
+          {@password, string!(password, codepage)},
+          {@computer_name, string!(address, codepage)}
         ]
       }
     end
@@ -283,13 +295,13 @@ defmodule ADS.Discovery do
     end
   end
 
-  defp device(ip, answer) do
+  defp device(ip, answer, codepage) do
     tag = fn id -> with {^id, value} <- List.keyfind(answer.tags, id, 0), do: value end
 
     %{
       address: ip,
       net_id: NetId.to_string(answer.net_id),
-      name: if(name = tag.(@computer_name), do: name |> cstring() |> ADS.Secure.ansi()),
+      name: if(name = tag.(@computer_name), do: name |> cstring() |> Codepage.decode(codepage)),
       version: version(tag.(@version)),
       fingerprint: fingerprint(tag.(@fingerprint)),
       tags: answer.tags
@@ -355,8 +367,8 @@ defmodule ADS.Discovery do
 
   defp tags(_rest, _n, tags), do: Enum.reverse(tags)
 
-  defp string!(string) do
-    bytes = ADS.Secure.ansi!(string) <> <<0>>
+  defp string!(string, codepage) do
+    bytes = Codepage.encode!(string, codepage) <> <<0>>
 
     if byte_size(bytes) > 65535,
       do: raise(ArgumentError, "a string of at most 65534 bytes, got #{byte_size(bytes) - 1}")
@@ -391,6 +403,9 @@ defmodule ADS.Discovery do
 
   defp deadline(timeout),
     do: raise(ArgumentError, "timeout: must be a positive number of ms, got: #{inspect(timeout)}")
+
+  defp codepage!(opts),
+    do: opts |> Keyword.get(:codepage, Codepage.default()) |> Codepage.check!()
 
   defp check!(opts, known) do
     if not Keyword.keyword?(opts), do: raise(ArgumentError, "expected a keyword list of options")

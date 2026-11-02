@@ -5,6 +5,7 @@ defmodule ADS.FuzzTest do
   use ExUnitProperties
 
   alias ADS.{
+    Adapter,
     AMS,
     Command,
     DataType,
@@ -317,10 +318,21 @@ defmodule ADS.FuzzTest do
     end
   end
 
+  # Save a byte a STRING's code page has no character for, which decodes to U+FFFD, and so has
+  # nothing to encode to.
   property "a value decoded from any bytes encodes to bytes that decode to it again" do
     check all type <- scale(type(), &min(&1, 20)), bytes <- binary(length: Type.size(type)) do
       assert {:ok, value} = Type.decode(type, bytes)
-      assert Type.decode(type, Type.encode(type, value)) == {:ok, value}
+
+      try do
+        Type.encode(type, value)
+      rescue
+        e in ArgumentError ->
+          assert :binary.match(:erlang.term_to_binary(value), "\uFFFD") != :nomatch,
+                 Exception.message(e)
+      else
+        encoded -> assert Type.decode(type, encoded) == {:ok, value}
+      end
     end
   end
 
@@ -570,6 +582,64 @@ defmodule ADS.FuzzTest do
 
         :error ->
           :ok
+      end
+    end
+  end
+
+  ## Adapters, as a system service lists them
+
+  defp ip4, do: tuple({byte(), byte(), byte(), byte()})
+
+  defp adapter do
+    gen all name <- string(:alphanumeric, max_length: 255),
+            description <- string(:alphanumeric, max_length: 127),
+            mac <- binary(max_length: 8),
+            index <- u32(),
+            dhcp <- boolean(),
+            addresses <- list_of(tuple({ip4(), ip4()}), max_length: 4),
+            gateway <- ip4() do
+      %{
+        name: name,
+        description: description,
+        mac: mac,
+        index: index,
+        dhcp: dhcp,
+        addresses: Enum.reject(addresses, &(elem(&1, 0) == {0, 0, 0, 0})),
+        gateways: if(gateway == {0, 0, 0, 0}, do: [], else: [gateway])
+      }
+    end
+  end
+
+  property "a list of adapters decodes to the adapters" do
+    check all adapters <- list_of(adapter(), max_length: 4) do
+      assert {:ok, decoded} = Adapter.decode_all(ADS.Test.FakePLC.adapter_list(adapters))
+
+      assert for(a <- decoded, do: Map.take(a, [:name, :description, :index, :dhcp, :addresses])) ==
+               for(
+                 a <- adapters,
+                 do: Map.take(a, [:name, :description, :index, :dhcp, :addresses])
+               )
+
+      assert for(a <- decoded, do: a.gateways) == for(a <- adapters, do: a.gateways)
+
+      assert for(a <- decoded, do: a.mac) ==
+               for(
+                 a <- adapters,
+                 do: a.mac |> Base.encode16() |> String.replace(~r/(..)(?!$)/, "\\1:")
+               )
+    end
+  end
+
+  property "any bytes are adapters or an error" do
+    corrupted =
+      map(list_of(adapter(), min_length: 1, max_length: 3), fn adapters ->
+        corrupt(ADS.Test.FakePLC.adapter_list(adapters))
+      end)
+
+    check all bytes <- one_of([binary(max_length: 2000), corrupted]) do
+      case Adapter.decode_all(bytes) do
+        {:ok, adapters} -> assert Enum.all?(adapters, &String.valid?(&1.name))
+        :error -> :ok
       end
     end
   end

@@ -126,10 +126,13 @@ defmodule ADS.Client do
     * `:backoff` - `{first, longest}` wait between attempts to connect, in ms
       (default `{100, 5000}`)
     * `:max_size` - the most data an answer may have, in bytes (default 16 MB)
+    * `:codepage` - of the system's strings of one byte to a character: its STRINGs, the names
+      and comments of its symbols and types, its host name, routes and adapters, and Secure ADS's
+      host name and login (default `:windows_1252`; see `ADS.Codepage`)
     * `:name` - to register the process
   """
 
-  alias ADS.{DataType, NetId, Route, Sum, Symbol, Type}
+  alias ADS.{Adapter, Codepage, DataType, NetId, Route, Sum, Symbol, Type}
 
   @backoff {100, 5_000}
 
@@ -146,6 +149,14 @@ defmodule ADS.Client do
   # SYSTEMSERVICE_ENUMREMOTE, on the system service's port: a route for each index.
   @enum_remote 803
   @system_service 10000
+
+  # SYSTEMSERVICE_IPHELPERAPI, with IPHELPERAPI_ADAPTERSINFO and IPHELPERAPI_IPADDRBYHOSTNAME for
+  # offsets, and SYSTEMSERVICE_IPHOSTNAME, whose answer is a T_MaxString of 256 bytes at most.
+  @ip_helper 701
+  @adapters_info 1
+  @address_by_name 4
+  @host_name 702
+  @host_name_size 256
 
   # Routes, so many and no more, of a system that never says it has none left; Beckhoff's
   # Tc2_Utilities has 99 at most.
@@ -287,7 +298,7 @@ defmodule ADS.Client do
     with {:ok, handle, type} <- entry(client, name, given, opts) do
       client
       |> request({:read, @value_by_handle, handle, Type.size(type)}, opts)
-      |> decoded(type)
+      |> decoded(in_codepage(type, client))
       |> again(retries, fn ->
         forget(client, name, opts)
         read_target(client, target, given, opts, retries - 1)
@@ -296,7 +307,10 @@ defmodule ADS.Client do
   end
 
   defp read_target(client, {:address, group, offset}, type, opts, _retries),
-    do: client |> request({:read, group, offset, Type.size(type)}, opts) |> decoded(type)
+    do:
+      client
+      |> request({:read, group, offset, Type.size(type)}, opts)
+      |> decoded(in_codepage(type, client))
 
   defp decoded({:ok, data}, type) do
     case Type.decode(type, data) do
@@ -306,6 +320,29 @@ defmodule ADS.Client do
   end
 
   defp decoded(error, _type), do: error
+
+  defp encode(client, type, value), do: type |> in_codepage(client) |> Type.encode(value)
+
+  # The type with the client's code page for its STRINGs, if it has any that are plain; the client
+  # is asked for it only then.
+  defp in_codepage(type, client) do
+    if Type.codepage(type, nil) == type do
+      type
+    else
+      case codepage(client) do
+        :windows_1252 -> type
+        codepage -> Type.codepage(type, codepage)
+      end
+    end
+  end
+
+  # The client's code page; the default, if it can't be asked, as its request fails anyway.
+  defp codepage(client) do
+    case cache_call(client, :codepage) do
+      {:ok, codepage} -> codepage
+      _closed -> Codepage.default()
+    end
+  end
 
   defp again({:error, reason}, retries, again) when reason in @stale and retries > 0, do: again.()
   defp again(result, _retries, _again), do: result
@@ -323,7 +360,7 @@ defmodule ADS.Client do
   defp write_target(client, {:symbol, name} = target, value, given, opts, retries) do
     with {:ok, handle, type} <- entry(client, name, given, opts) do
       client
-      |> request({:write, @value_by_handle, handle, Type.encode(type, value)}, opts)
+      |> request({:write, @value_by_handle, handle, encode(client, type, value)}, opts)
       |> again(retries, fn ->
         forget(client, name, opts)
         write_target(client, target, value, given, opts, retries - 1)
@@ -332,7 +369,7 @@ defmodule ADS.Client do
   end
 
   defp write_target(client, {:address, group, offset}, value, type, opts, _retries),
-    do: request(client, {:write, group, offset, Type.encode(type, value)}, opts)
+    do: request(client, {:write, group, offset, encode(client, type, value)}, opts)
 
   @doc """
   Reads many variables at once, each a name, or `{target, type}`, and gives a result for each, in
@@ -350,7 +387,7 @@ defmodule ADS.Client do
 
     results =
       merge(resolved, sum(client, :read, reads, opts), fn entry, result ->
-        decoded(result, entry.type)
+        decoded(result, in_codepage(entry.type, client))
       end)
 
     results =
@@ -382,7 +419,7 @@ defmodule ADS.Client do
     encoded =
       for {{_item, value}, resolved} <- Enum.zip(items, resolved) do
         case resolved do
-          {:ok, entry} -> {:ok, Map.put(entry, :data, Type.encode(entry.type, value))}
+          {:ok, entry} -> {:ok, Map.put(entry, :data, encode(client, entry.type, value))}
           error -> error
         end
       end
@@ -433,7 +470,7 @@ defmodule ADS.Client do
             target: original,
             symbol: symbol_name(target),
             given: given,
-            type: entry.type,
+            type: in_codepage(entry.type, client),
             port: Keyword.get(opts, :port),
             group: entry.group,
             offset: entry.offset,
@@ -524,7 +561,7 @@ defmodule ADS.Client do
   def symbol(client, name, opts \\ []) when is_binary(name) do
     with {:ok, data} <-
            request(client, {:read_write, @symbol_by_name, 0, 0xFFFF, name <> <<0>>}, opts),
-         do: parsed(Symbol.decode(data), data)
+         do: parsed(Symbol.decode(data, codepage(client)), data)
   end
 
   @doc """
@@ -535,7 +572,7 @@ defmodule ADS.Client do
   def data_type(client, name, opts \\ []) when is_binary(name) do
     with {:ok, data} <-
            request(client, {:read_write, @type_by_name, 0, 0x100000, name <> <<0>>}, opts),
-         do: parsed(DataType.decode(data), data)
+         do: parsed(DataType.decode(data, codepage(client)), data)
   end
 
   @doc """
@@ -563,16 +600,17 @@ defmodule ADS.Client do
   @spec routes(GenServer.server(), keyword) :: {:ok, [Route.t()]} | {:error, ADS.error()}
   def routes(client, opts \\ []) do
     opts = Keyword.put_new(opts, :port, @system_service)
-    each_route(client, opts, 0, [])
+    each_route(client, opts, codepage(client), 0, [])
   end
 
-  defp each_route(_client, _opts, @max_routes, routes), do: {:ok, Enum.reverse(routes)}
+  defp each_route(_client, _opts, _codepage, @max_routes, routes),
+    do: {:ok, Enum.reverse(routes)}
 
-  defp each_route(client, opts, index, routes) do
+  defp each_route(client, opts, codepage, index, routes) do
     case request(client, {:read, @enum_remote, index, 2048}, opts) do
       {:ok, data} ->
-        case Route.decode(data) do
-          {:ok, route} -> each_route(client, opts, index + 1, [route | routes])
+        case Route.decode(data, codepage) do
+          {:ok, route} -> each_route(client, opts, codepage, index + 1, [route | routes])
           :error -> {:error, {:invalid_response, data}}
         end
 
@@ -584,12 +622,76 @@ defmodule ADS.Client do
     end
   end
 
+  @doc """
+  The host name of the system, as its system service answers it. `port:` asks another AMS port
+  than 10000.
+
+      {:ok, "CX-1234AB"} = ADS.Client.host_name(plc)
+  """
+  @spec host_name(GenServer.server(), keyword) :: {:ok, String.t()} | {:error, ADS.error()}
+  def host_name(client, opts \\ []) do
+    opts = Keyword.put_new(opts, :port, @system_service)
+
+    with {:ok, data} <- request(client, {:read, @host_name, 0, @host_name_size}, opts),
+         do: {:ok, data |> :binary.split(<<0>>) |> hd() |> Codepage.decode(codepage(client))}
+  end
+
+  @doc """
+  The network adapters of the system, with their addresses, as its system service lists them (see
+  `ADS.Adapter`). `port:` asks another AMS port than 10000.
+
+      {:ok, [%ADS.Adapter{addresses: [{{10, 0, 0, 5}, {255, 255, 255, 0}}]} | _]} =
+        ADS.Client.adapters(plc)
+  """
+  @spec adapters(GenServer.server(), keyword) :: {:ok, [Adapter.t()]} | {:error, ADS.error()}
+  def adapters(client, opts \\ []) do
+    opts = Keyword.put_new(opts, :port, @system_service)
+    adapters(client, opts, 2)
+  end
+
+  # The size of the list first, then the list; again, if it has grown in between.
+  defp adapters(client, opts, tries) do
+    with {:ok, <<size::32-little>>} <-
+           request(client, {:read, @ip_helper, @adapters_info, 4}, opts),
+         {:ok, data} <- request(client, {:read, @ip_helper, @adapters_info, size}, opts) do
+      case Adapter.decode_all(data, codepage(client)) do
+        {:ok, adapters} -> {:ok, adapters}
+        :error -> {:error, {:invalid_response, data}}
+      end
+    else
+      {:ok, data} -> {:error, {:invalid_response, data}}
+      {:error, :device_invalid_size} when tries > 1 -> adapters(client, opts, tries - 1)
+      error -> error
+    end
+  end
+
+  @doc """
+  The IPv4 address the system finds for a host name, as its system service looks it up: on the
+  system, so with its DNS and its hosts file. `port:` asks another AMS port than 10000.
+
+      {:ok, {10, 0, 0, 7}} = ADS.Client.host_address(plc, "scada-1")
+      {:error, :device_not_found} = ADS.Client.host_address(plc, "nowhere.invalid")
+  """
+  @spec host_address(GenServer.server(), String.t(), keyword) ::
+          {:ok, :inet.ip4_address()} | {:error, ADS.error()}
+  def host_address(client, name, opts \\ []) when is_binary(name) do
+    opts = Keyword.put_new(opts, :port, @system_service)
+    name = Codepage.encode!(name, codepage(client))
+    request = {:read_write, @ip_helper, @address_by_name, 4, name <> <<0>>}
+
+    case request(client, request, opts) do
+      {:ok, <<a, b, c, d>>} -> {:ok, {a, b, c, d}}
+      {:ok, data} -> {:error, {:invalid_response, data}}
+      error -> error
+    end
+  end
+
   @doc "Uploads the descriptions of all the PLC's variables."
   @spec symbols(GenServer.server(), keyword) :: {:ok, [Symbol.t()]} | {:error, ADS.error()}
   def symbols(client, opts \\ []) do
     with {:ok, info} <- upload_info(client, opts),
          {:ok, data} <- request(client, {:read, @symbol_upload, 0, info.symbol_size}, opts),
-         do: parsed(Symbol.decode_all(data), data)
+         do: parsed(Symbol.decode_all(data, codepage(client)), data)
   end
 
   @doc "Uploads the descriptions of all the PLC's data types."
@@ -597,7 +699,7 @@ defmodule ADS.Client do
   def data_types(client, opts \\ []) do
     with {:ok, %{type_size: size}} when is_integer(size) <- upload_info(client, opts),
          {:ok, data} <- request(client, {:read, @type_upload, 0, size}, opts) do
-      parsed(DataType.decode_all(data), data)
+      parsed(DataType.decode_all(data, codepage(client)), data)
     else
       {:ok, %{type_size: nil}} -> {:error, :device_service_not_supported}
       error -> error
@@ -726,7 +828,7 @@ defmodule ADS.Client do
 
   defp symbol_type(client, result, opts) do
     with {:ok, data} <- result,
-         {:ok, symbol} <- parsed(Symbol.decode(data), data),
+         {:ok, symbol} <- parsed(Symbol.decode(data, codepage(client)), data),
          do: surely(fn -> type_of(client, symbol, opts) end)
   end
 
@@ -1058,7 +1160,8 @@ defmodule ADS.Client do
       :connect_timeout,
       :backoff,
       :max_size,
-      :name
+      :name,
+      :codepage
     ]
 
     case Enum.uniq(Keyword.keys(opts)) -- known do
@@ -1066,7 +1169,8 @@ defmodule ADS.Client do
       unknown -> raise ArgumentError, "unknown options: #{inspect(unknown)}"
     end
 
-    secure = if Keyword.has_key?(opts, :secure), do: ADS.Secure.config!(opts[:secure])
+    codepage = Codepage.check!(Keyword.get(opts, :codepage, Codepage.default()))
+    secure = if Keyword.has_key?(opts, :secure), do: ADS.Secure.config!(opts[:secure], codepage)
 
     %{
       host: host!(Keyword.get(opts, :host)),
@@ -1084,7 +1188,8 @@ defmodule ADS.Client do
       connect_timeout: positive!(opts, :connect_timeout, 5000),
       backoff: backoff!(Keyword.get(opts, :backoff, @backoff)),
       max_size: positive!(opts, :max_size, 16 * 1024 * 1024),
-      secure: secure
+      secure: secure,
+      codepage: codepage
     }
   end
 

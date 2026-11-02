@@ -58,15 +58,39 @@ defmodule ADS.TypeTest do
     assert_raise ArgumentError, fn -> Type.encode(:real, 1.0e39) end
   end
 
-  test "STRING(n) takes n + 1 bytes, in Latin-1, and ends at the first zero" do
+  test "STRING(n) takes n + 1 bytes, in Windows-1252, and ends at the first zero" do
     assert round_trip({:string, 5}, "Grüß") == <<"Gr", 0xFC, 0xDF, 0, 0>>
     assert Type.decode({:string, 5}, <<"ab", 0, "cd", 0>>) == {:ok, "ab"}
     # one without its zero still ends before it, at n characters, so that it can be written back
     assert Type.decode({:string, 2}, "abc") == {:ok, "ab"}
     assert Type.decode({:wstring, 1}, <<?a, 0, ?b, 0>>) == {:ok, "a"}
     assert_raise ArgumentError, fn -> Type.encode({:string, 3}, "toolong") end
-    assert_raise ArgumentError, fn -> Type.encode({:string, 10}, "€") end
+    assert round_trip({:string, 3}, "€") == <<0x80, 0, 0, 0>>
+
+    assert_raise ArgumentError, ~r/Windows-1252 doesn't/, fn ->
+      Type.encode({:string, 10}, "Ω")
+    end
+
+    # a byte Windows-1252 has no character for
+    assert Type.decode({:string, 2}, <<0x81, ?a, 0>>) == {:ok, "\uFFFDa"}
     assert Type.size({:string, 80}) == 81
+  end
+
+  test "a STRING of another code page, and a type's plain STRINGs put in one" do
+    assert round_trip({:string, 4, :windows_1251}, "Окно") == <<0xCE, 0xEA, 0xED, 0xEE, 0>>
+    assert Type.decode({:string, 1, :windows_1250}, <<0xA3, 0>>) == {:ok, "Ł"}
+    assert_raise ArgumentError, fn -> Type.encode({:string, 4, :windows_1251}, "Grüß") end
+    assert_raise ArgumentError, ~r/No code page/, fn -> Type.encode({:string, 4, :nope}, "a") end
+
+    pump = {:struct, 12, [{"sTag", 0, {:string, 5}}, {"sUtf", 6, {:string, 5, :utf8}}]}
+
+    assert Type.codepage({:array, pump, [{1, 2}]}, :windows_1251) ==
+             {:array,
+              {:struct, 12,
+               [{"sTag", 0, {:string, 5, :windows_1251}}, {"sUtf", 6, {:string, 5, :utf8}}]},
+              [{1, 2}]}
+
+    assert Type.codepage(:int, :windows_1251) == :int
   end
 
   test "a STRING with the attribute TcEncoding UTF-8 holds UTF-8, its bytes counted" do

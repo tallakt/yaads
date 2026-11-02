@@ -62,6 +62,7 @@ defmodule ADS.Client.Connection do
        submit(s, entry(port(port, s), request, encoded, timeout, {:call, from}, tag, s))}
 
   def handle_call(:status, _from, s), do: {:reply, s.status, s}
+  def handle_call(:codepage, _from, s), do: {:reply, {:ok, s.codepage}, s}
 
   def handle_call(:info, _from, s) do
     info = %{

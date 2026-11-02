@@ -43,7 +43,7 @@ defmodule ADS.Secure do
   bring their own transport.
   """
 
-  alias ADS.NetId
+  alias ADS.{Codepage, NetId}
 
   @flags [
     response: 0x01,
@@ -66,38 +66,6 @@ defmodule ADS.Secure do
   # they're offered after OTP's own.
   @certificate_suites ~w(TLS_DHE_RSA_WITH_AES_256_CBC_SHA256 TLS_DHE_RSA_WITH_AES_128_CBC_SHA256)c
 
-  # Windows-1252 differs from Latin-1 in 0x80 to 0x9F.
-  @cp1252 %{
-    0x80 => 0x20AC,
-    0x82 => 0x201A,
-    0x83 => 0x0192,
-    0x84 => 0x201E,
-    0x85 => 0x2026,
-    0x86 => 0x2020,
-    0x87 => 0x2021,
-    0x88 => 0x02C6,
-    0x89 => 0x2030,
-    0x8A => 0x0160,
-    0x8B => 0x2039,
-    0x8C => 0x0152,
-    0x8E => 0x017D,
-    0x91 => 0x2018,
-    0x92 => 0x2019,
-    0x93 => 0x201C,
-    0x94 => 0x201D,
-    0x95 => 0x2022,
-    0x96 => 0x2013,
-    0x97 => 0x2014,
-    0x98 => 0x02DC,
-    0x99 => 0x2122,
-    0x9A => 0x0161,
-    0x9B => 0x203A,
-    0x9C => 0x0153,
-    0x9E => 0x017E,
-    0x9F => 0x0178
-  }
-  @from_unicode Map.new(@cp1252, fn {byte, char} -> {char, byte} end)
-
   @type flag ::
           :response
           | :ams_allowed
@@ -118,25 +86,41 @@ defmodule ADS.Secure do
         }
 
   @doc """
-  A TlsConnectInfo, with credentials to add a route, or nil. The host name is cut to 31 bytes.
+  A TlsConnectInfo, with credentials to add a route, or nil; the strings in the code page (see
+  `ADS.Codepage`). The host name is cut to 31 bytes.
 
       iex> info = ADS.Secure.connect_info([:self_signed], <<10, 0, 0, 7, 1, 1>>, "scada")
       iex> byte_size(info)
       64
       iex> {:ok, %{flags: [:self_signed], hostname: "scada"}, ""} = ADS.Secure.decode_connect_info(info)
   """
-  @spec connect_info([flag], ADS.NetId.t(), String.t(), {String.t(), String.t()} | nil) :: binary
-  def connect_info(flags, <<_::48>> = net_id, hostname, credentials \\ nil) do
+  @spec connect_info(
+          [flag],
+          ADS.NetId.t(),
+          String.t(),
+          {String.t(), String.t()} | nil,
+          Codepage.t()
+        ) :: binary
+  def connect_info(
+        flags,
+        <<_::48>> = net_id,
+        hostname,
+        credentials \\ nil,
+        codepage \\ Codepage.default()
+      ) do
     {user, password} =
       case credentials do
-        nil -> {"", ""}
-        {user, password} -> {ansi!(user), ansi!(password)}
+        nil ->
+          {"", ""}
+
+        {user, password} ->
+          {Codepage.encode!(user, codepage), Codepage.encode!(password, codepage)}
       end
 
     if byte_size(user) > 255 or byte_size(password) > 255 or byte_size(user <> password) > 448,
       do: raise(ArgumentError, "a user name and password of at most 255 bytes each, 448 together")
 
-    host = ansi!(hostname)
+    host = Codepage.encode!(hostname, codepage)
     host = binary_part(host, 0, min(byte_size(host), 31))
 
     <<64 + byte_size(user) + byte_size(password)::16-little, bits(flags)::16-little, 1, 0,
@@ -155,19 +139,24 @@ defmodule ADS.Secure do
 
   @doc """
   The first TlsConnectInfo in the bytes: `{:ok, info, rest}`, `:more` for the start of one, or
-  `:error` for one that can't be, longer than 512 bytes or shorter than 64.
+  `:error` for one that can't be, longer than 512 bytes or shorter than 64. The strings are in
+  the code page.
   """
-  @spec decode_connect_info(binary) :: {:ok, connect_info, binary} | :more | :error
-  def decode_connect_info(<<length::16-little, _::binary>>) when length < 64 or length > 512,
-    do: :error
+  @spec decode_connect_info(binary, Codepage.t()) :: {:ok, connect_info, binary} | :more | :error
+  def decode_connect_info(bytes, codepage \\ Codepage.default())
 
-  def decode_connect_info(<<length::16-little, _::binary>> = bytes)
+  def decode_connect_info(<<length::16-little, _::binary>>, _codepage)
+      when length < 64 or length > 512,
+      do: :error
+
+  def decode_connect_info(<<length::16-little, _::binary>> = bytes, _codepage)
       when byte_size(bytes) < length,
       do: :more
 
   def decode_connect_info(
         <<length::16-little, flags::16-little, version, error, net_id::binary-6, user_length,
-          password_length, _reserved::binary-18, host::binary-32, rest::binary>>
+          password_length, _reserved::binary-18, host::binary-32, rest::binary>>,
+        codepage
       ) do
     case rest do
       <<user::binary-size(user_length), password::binary-size(password_length), rest::binary>>
@@ -177,8 +166,11 @@ defmodule ADS.Secure do
           version: version,
           error: if(error == 0, do: nil, else: Map.get(@errors, error, error)),
           net_id: net_id,
-          hostname: host |> :binary.split(<<0>>) |> hd() |> ansi(),
-          credentials: if(length > 64, do: {ansi(user), ansi(password)})
+          hostname: host |> :binary.split(<<0>>) |> hd() |> Codepage.decode(codepage),
+          credentials:
+            if(length > 64,
+              do: {Codepage.decode(user, codepage), Codepage.decode(password, codepage)}
+            )
         }
 
         {:ok, info, rest}
@@ -188,37 +180,19 @@ defmodule ADS.Secure do
     end
   end
 
-  def decode_connect_info(_partial), do: :more
+  def decode_connect_info(_partial, _codepage), do: :more
 
   @doc """
   The pre-shared key of an identity and a password, as TwinCAT makes it: the SHA-256 of the
-  identity in upper case followed by the password.
+  identity in upper case followed by the password, both in the code page.
   """
-  @spec psk_key(String.t(), String.t()) :: <<_::256>>
-  def psk_key(identity, password),
-    do: :crypto.hash(:sha256, ansi!(String.upcase(identity)) <> ansi!(password))
-
-  @doc """
-  A string in Windows-1252, as TwinCAT's routers write them; raises `ArgumentError` for one with
-  characters it doesn't have.
-  """
-  @spec ansi!(String.t()) :: binary
-  def ansi!(string) when is_binary(string) do
-    if not String.valid?(string), do: raise(ArgumentError, "not UTF-8: #{inspect(string)}")
-
-    for <<char::utf8 <- string>>, into: <<>> do
-      cond do
-        char < 0x80 or char in 0xA0..0xFF -> <<char>>
-        Map.has_key?(@from_unicode, char) -> <<Map.fetch!(@from_unicode, char)>>
-        true -> raise ArgumentError, "#{inspect(string)} has characters Windows-1252 doesn't"
-      end
-    end
+  @spec psk_key(String.t(), String.t(), Codepage.t()) :: <<_::256>>
+  def psk_key(identity, password, codepage \\ Codepage.default()) do
+    :crypto.hash(
+      :sha256,
+      Codepage.encode!(String.upcase(identity), codepage) <> Codepage.encode!(password, codepage)
+    )
   end
-
-  @doc "A string from Windows-1252."
-  @spec ansi(binary) :: String.t()
-  def ansi(bytes),
-    do: for(<<byte <- bytes>>, into: "", do: <<Map.get(@cp1252, byte, byte)::utf8>>)
 
   @doc """
   A certificate's fingerprint as Secure ADS compares them: the SHA-256 of its DER, as 64
@@ -228,8 +202,9 @@ defmodule ADS.Secure do
   def fingerprint(der), do: Base.encode16(:crypto.hash(:sha256, der))
 
   @doc false
-  # The options of secure: in ADS.Client, checked, and made ready to connect with.
-  def config!(opts) do
+  # The options of secure: in ADS.Client, checked, and made ready to connect with, its strings in
+  # the client's code page.
+  def config!(opts, codepage \\ Codepage.default()) do
     if not Keyword.keyword?(opts), do: raise(ArgumentError, "secure: must be a keyword list")
 
     known = [
@@ -259,15 +234,16 @@ defmodule ADS.Secure do
     hostname =
       Keyword.get_lazy(opts, :hostname, fn -> elem(:inet.gethostname(), 1) |> to_string() end)
 
-    _ = ansi!(hostname)
+    _ = Codepage.encode!(hostname, codepage)
 
     %{
       mode: mode,
-      ssl: ssl!(mode, opts),
+      ssl: ssl!(mode, opts, codepage),
       fingerprint: if(mode == :self_signed, do: fingerprint!(opts[:fingerprint])),
-      add_route: add_route!(mode, opts[:add_route]),
+      add_route: add_route!(mode, opts[:add_route], codepage),
       flags: flags,
-      hostname: hostname
+      hostname: hostname,
+      codepage: codepage
     }
   end
 
@@ -302,11 +278,12 @@ defmodule ADS.Secure do
     end
   end
 
-  defp ssl!(:psk, opts) do
+  defp ssl!(:psk, opts, codepage) do
     {identity, key} =
       case opts[:psk] do
         {identity, password} when is_binary(identity) and is_binary(password) ->
-          {identity |> ansi!() |> :binary.bin_to_list(), psk_key(identity, password)}
+          {identity |> Codepage.encode!(codepage) |> :binary.bin_to_list(),
+           psk_key(identity, password, codepage)}
 
         other ->
           raise ArgumentError, "psk: must be {identity, password}, got: #{inspect(other)}"
@@ -326,7 +303,7 @@ defmodule ADS.Secure do
     ] ++ extra!(opts)
   end
 
-  defp ssl!(mode, opts) do
+  defp ssl!(mode, opts, _codepage) do
     own =
       cond do
         Keyword.has_key?(opts, :cert) and Keyword.has_key?(opts, :key) ->
@@ -404,18 +381,18 @@ defmodule ADS.Secure do
         "fingerprint: must be a SHA-256 in hex, or :any, got: #{inspect(other)}"
       )
 
-  defp add_route!(_mode, nil), do: nil
+  defp add_route!(_mode, nil, _codepage), do: nil
 
-  defp add_route!(:self_signed, {user, password} = login)
+  defp add_route!(:self_signed, {user, password} = login, codepage)
        when is_binary(user) and is_binary(password) do
-    _ = connect_info([], <<0::48>>, "", login)
+    _ = connect_info([], <<0::48>>, "", login, codepage)
     login
   end
 
-  defp add_route!(:self_signed, other),
+  defp add_route!(:self_signed, other, _codepage),
     do: raise(ArgumentError, "add_route: must be {user, password}, got: #{inspect(other)}")
 
-  defp add_route!(_mode, _login),
+  defp add_route!(_mode, _login, _codepage),
     do: raise(ArgumentError, "add_route: is for fingerprint:, self-signed certificates")
 
   @doc false
@@ -453,8 +430,12 @@ defmodule ADS.Secure do
 
     with :ok <- pinned(socket, config.fingerprint),
          {:ok, local} <- local_net_id(socket, local),
-         :ok <- :ssl.send(socket, connect_info(flags, local, config.hostname, config.add_route)),
-         {:ok, answer, rest} <- answer(socket, <<>>, timeout) do
+         :ok <-
+           :ssl.send(
+             socket,
+             connect_info(flags, local, config.hostname, config.add_route, config.codepage)
+           ),
+         {:ok, answer, rest} <- answer(socket, <<>>, config.codepage, timeout) do
       cond do
         answer.error != nil -> {:error, {:secure_ads, answer.error}}
         :response not in answer.flags -> {:error, :invalid_connect_info}
@@ -485,14 +466,14 @@ defmodule ADS.Secure do
     end
   end
 
-  defp answer(socket, buffer, timeout) do
-    case decode_connect_info(buffer) do
+  defp answer(socket, buffer, codepage, timeout) do
+    case decode_connect_info(buffer, codepage) do
       {:ok, answer, rest} ->
         {:ok, answer, rest}
 
       :more ->
         case :ssl.recv(socket, 0, timeout) do
-          {:ok, data} -> answer(socket, buffer <> data, timeout)
+          {:ok, data} -> answer(socket, buffer <> data, codepage, timeout)
           {:error, reason} -> {:error, reason}
         end
 

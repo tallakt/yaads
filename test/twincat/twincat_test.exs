@@ -108,6 +108,28 @@ defmodule ADS.TwinCATTest do
     assert {:ok, %{ads_state: :run}} = Client.read_state(client)
   end
 
+  test "its system service answers its host name, its adapters, and addresses it looks up",
+       %{client: client} do
+    assert {:ok, name} = Client.host_name(client)
+    assert name != ""
+
+    # Raw, so that a layout that isn't as ADS.Adapter has it shows what it is instead.
+    {:ok, <<size::32-little>>} = Client.request(client, {:read, 701, 1, 4}, port: 10_000)
+    {:ok, list} = Client.request(client, {:read, 701, 1, size}, port: 10_000)
+
+    assert {:ok, [_ | _] = adapters} = ADS.Adapter.decode_all(list),
+           "adapters not as ADS.Adapter has them: #{inspect(list, limit: :infinity)}"
+
+    assert Enum.all?(adapters, &(&1.mac =~ ~r/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/))
+
+    # The host the client connects to is an address of one of them.
+    {:ok, host} = :inet.parse_ipv4strict_address(String.to_charlist(env!("TWINCAT_HOST")))
+    assert Enum.any?(adapters, fn a -> Enum.any?(a.addresses, &(elem(&1, 0) == host)) end)
+
+    assert Client.host_address(client, "localhost") == {:ok, {127, 0, 0, 1}}
+    assert Client.host_address(client, "nowhere.invalid") == {:error, :device_not_found}
+  end
+
   test "a variable of each type, written and read back by name, as the PLC describes it", %{
     client: client
   } do

@@ -160,6 +160,100 @@ defmodule ADS.ClientTest do
     assert Client.routes(client(plc())) == {:error, :target_port_not_found}
   end
 
+  test "the host name of the system, as its system service answers it" do
+    assert Client.host_name(client(plc(system: true, host_name: "Prüfstand-1"))) ==
+             {:ok, "Prüfstand-1"}
+
+    assert Client.host_name(client(plc())) == {:error, :target_port_not_found}
+  end
+
+  test "the adapters of the system, the size of their list asked for first" do
+    adapters = [
+      %{
+        name: "{5E97F165}",
+        description: "TwinCAT-Intel PCI Ethernet Adapter (Gigabit)",
+        mac: <<0, 1, 5, 0x76, 0x34, 0xAE>>,
+        index: 9,
+        addresses: [
+          {{192, 168, 0, 114}, {255, 255, 255, 0}},
+          {{192, 168, 0, 200}, {255, 255, 255, 0}},
+          {{10, 0, 0, 5}, {255, 0, 0, 0}}
+        ],
+        gateways: [{192, 168, 0, 1}]
+      },
+      %{name: "{A6070370}", index: 12, type: 71, dhcp: true, dhcp_server: {10, 0, 0, 1}},
+      %{name: "{B0}", index: 13, type: 999, addresses: [{{10, 1, 0, 5}, {255, 255, 0, 0}}]}
+    ]
+
+    assert {:ok, [first, second, third]} =
+             Client.adapters(client(plc(system: true, adapters: adapters)))
+
+    assert first == %ADS.Adapter{
+             name: "{5E97F165}",
+             description: "TwinCAT-Intel PCI Ethernet Adapter (Gigabit)",
+             mac: "00:01:05:76:34:AE",
+             index: 9,
+             type: :ethernet,
+             dhcp: false,
+             addresses: [
+               {{192, 168, 0, 114}, {255, 255, 255, 0}},
+               {{192, 168, 0, 200}, {255, 255, 255, 0}},
+               {{10, 0, 0, 5}, {255, 0, 0, 0}}
+             ],
+             gateways: [{192, 168, 0, 1}],
+             dhcp_server: nil
+           }
+
+    assert %ADS.Adapter{type: :wireless, dhcp: true, addresses: [], gateways: []} = second
+    assert second.dhcp_server == {10, 0, 0, 1}
+    assert %ADS.Adapter{type: 999, addresses: [{{10, 1, 0, 5}, {255, 255, 0, 0}}]} = third
+
+    assert Client.adapters(client(plc(system: true))) == {:ok, []}
+    assert Client.adapters(client(plc())) == {:error, :target_port_not_found}
+  end
+
+  test "with codepage:, the system's strings in it: STRINGs, its host name, its adapters" do
+    adapters = [%{name: "{A}", description: "Сетевой адаптер"}]
+
+    plc =
+      plc(system: true, host_name: "Пульт-1", codepage: :windows_1251, adapters: adapters)
+
+    client = client(plc, codepage: :windows_1251)
+
+    assert :ok = Client.write(client, "MAIN.sName", "Насос")
+    assert {:ok, "Насос"} = Client.read(client, "MAIN.sName")
+    # in Windows-1251's bytes, which Windows-1252 has as these
+    assert {:ok, "Íàñîñ"} = Client.read(client(plc), "MAIN.sName")
+    # a STRING in UTF-8 stays so
+    assert :ok = Client.write(client, "GVL.sUtf8", "Насос")
+    assert {:ok, "Насос"} = Client.read(client, "GVL.sUtf8")
+
+    assert Client.host_name(client) == {:ok, "Пульт-1"}
+    assert {:ok, [%ADS.Adapter{description: "Сетевой адаптер"}]} = Client.adapters(client)
+
+    assert_raise ArgumentError, ~r/has characters Windows-1251 doesn't/, fn ->
+      Client.write(client, "MAIN.sName", "Grüße")
+    end
+
+    # Windows-1252 by default
+    default = client(plc)
+    assert :ok = Client.write(default, "MAIN.sName", "Grüße €")
+    assert {:ok, "Grüße €"} = Client.read(default, "MAIN.sName")
+  end
+
+  test "a code page yaads hasn't compiled in is an error at the start" do
+    assert_raise ArgumentError, ~r/add it to config :yaads, :codepages/, fn ->
+      Client.start_link(host: "127.0.0.1", net_id: @net_id, codepage: :windows_932)
+    end
+  end
+
+  test "the address the system finds for a host name" do
+    hosts = %{"localhost" => {127, 0, 0, 1}, "scada-1" => {10, 0, 0, 7}}
+    client = client(plc(system: true, hosts: hosts))
+    assert Client.host_address(client, "scada-1") == {:ok, {10, 0, 0, 7}}
+    assert Client.host_address(client, "nowhere.invalid") == {:error, :device_not_found}
+  end
+
   test "by index group and offset, with a type" do
     client = client(plc())
     type = {:array, :int, [{1, 3}]}

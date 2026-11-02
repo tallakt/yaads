@@ -80,31 +80,34 @@ defmodule ADS.DataType do
   # Members of members, so deep and no deeper: a description from a device may be anything.
   @max_depth 32
 
-  import ADS.Symbol, only: [flagged?: 2, string: 2]
+  import ADS.Symbol, only: [flagged?: 2, string: 3]
 
-  @doc "The data type entry at the start of the bytes, as in the answer to a request by name."
-  @spec decode(binary) :: {:ok, t} | :error
-  def decode(bytes) do
-    case entry(bytes, 0) do
+  @doc """
+  The data type entry at the start of the bytes, as in the answer to a request by name; its
+  strings in UTF-8 if they are, as plain ASCII is, or else in the code page (see `ADS.Codepage`).
+  """
+  @spec decode(binary, ADS.Codepage.t()) :: {:ok, t} | :error
+  def decode(bytes, codepage \\ ADS.Codepage.default()) do
+    case entry(bytes, 0, codepage) do
       {:ok, data_type, _rest} -> {:ok, data_type}
       :error -> :error
     end
   end
 
-  @doc "Every data type entry in the bytes, as uploaded."
-  @spec decode_all(binary) :: {:ok, [t]} | :error
-  def decode_all(bytes), do: entries(bytes, [])
+  @doc "Every data type entry in the bytes, as uploaded; the strings as for `decode/2`."
+  @spec decode_all(binary, ADS.Codepage.t()) :: {:ok, [t]} | :error
+  def decode_all(bytes, codepage \\ ADS.Codepage.default()), do: entries(bytes, codepage, [])
 
-  defp entries(<<>>, types), do: {:ok, Enum.reverse(types)}
+  defp entries(<<>>, _codepage, types), do: {:ok, Enum.reverse(types)}
 
-  defp entries(bytes, types) do
-    case entry(bytes, 0) do
-      {:ok, type, rest} -> entries(rest, [type | types])
+  defp entries(bytes, codepage, types) do
+    case entry(bytes, 0, codepage) do
+      {:ok, type, rest} -> entries(rest, codepage, [type | types])
       :error -> :error
     end
   end
 
-  defp entry(<<length::32-little, _::binary>> = bytes, depth)
+  defp entry(<<length::32-little, _::binary>> = bytes, depth, codepage)
        when length >= 42 and byte_size(bytes) >= length and depth < @max_depth do
     <<entry::binary-size(length), rest::binary>> = bytes
 
@@ -113,11 +116,11 @@ defmodule ADS.DataType do
       type_length::16-little, comment_length::16-little, dimensions::16-little,
       members::16-little, strings::binary>> = entry
 
-    with {:ok, name, strings} <- string(strings, name_length),
-         {:ok, type, strings} <- string(strings, type_length),
-         {:ok, comment, extra} <- string(strings, comment_length),
+    with {:ok, name, strings} <- string(strings, name_length, codepage),
+         {:ok, type, strings} <- string(strings, type_length, codepage),
+         {:ok, comment, extra} <- string(strings, comment_length, codepage),
          {:ok, array, extra} <- array(extra, dimensions, []),
-         {:ok, members, extra} <- members(extra, members, depth + 1, []) do
+         {:ok, members, extra} <- members(extra, members, depth + 1, codepage, []) do
       data_type = %__MODULE__{
         name: name,
         type: type,
@@ -133,13 +136,13 @@ defmodule ADS.DataType do
         members: members
       }
 
-      {:ok, extra(data_type, extra), rest}
+      {:ok, extra(data_type, extra, codepage), rest}
     else
       _ -> :error
     end
   end
 
-  defp entry(_bytes, _depth), do: :error
+  defp entry(_bytes, _depth, _codepage), do: :error
 
   defp array(rest, 0, dims), do: {:ok, Enum.reverse(dims), rest}
 
@@ -148,22 +151,25 @@ defmodule ADS.DataType do
 
   defp array(_rest, _n, _dims), do: :error
 
-  defp members(rest, 0, _depth, members), do: {:ok, Enum.reverse(members), rest}
+  defp members(rest, 0, _depth, _codepage, members), do: {:ok, Enum.reverse(members), rest}
 
-  defp members(rest, n, depth, members) do
-    case entry(rest, depth) do
-      {:ok, member, rest} -> members(rest, n - 1, depth, [member | members])
+  defp members(rest, n, depth, codepage, members) do
+    case entry(rest, depth, codepage) do
+      {:ok, member, rest} -> members(rest, n - 1, depth, codepage, [member | members])
       :error -> :error
     end
   end
 
   # What may follow the members, each part if flagged, in order; as far as it parses.
-  defp extra(%__MODULE__{flags: flags} = t, bytes) do
+  defp extra(%__MODULE__{flags: flags} = t, bytes, codepage) do
+    attributes = &attributes(&1, &2, codepage)
+    enum = &enum(&1, &2, codepage)
+
     with {:ok, t, bytes} <- part(t, bytes, flagged?(flags, @type_guid), &guid/2),
          {:ok, t, bytes} <- part(t, bytes, flagged?(flags, @copy_mask), &copy_mask/2),
          {:ok, t, bytes} <- part(t, bytes, flagged?(flags, @method_infos), &methods/2),
-         {:ok, t, bytes} <- part(t, bytes, flagged?(flags, @attributes), &attributes/2),
-         {:ok, t, _bytes} <- part(t, bytes, flagged?(flags, @enum_infos), &enum/2) do
+         {:ok, t, bytes} <- part(t, bytes, flagged?(flags, @attributes), attributes),
+         {:ok, t, _bytes} <- part(t, bytes, flagged?(flags, @enum_infos), enum) do
       t
     else
       {:stop, t} -> t
@@ -206,15 +212,15 @@ defmodule ADS.DataType do
 
   defp skip_entries(_t, _bytes, _n), do: :error
 
-  defp attributes(t, <<count::16-little, _::binary>> = bytes) do
-    attributes = ADS.Symbol.attributes(bytes)
+  defp attributes(t, <<count::16-little, _::binary>> = bytes, codepage) do
+    attributes = ADS.Symbol.attributes(bytes, codepage)
 
     if map_size(attributes) == count,
       do: {:ok, %{t | attributes: attributes}, skip_attributes(bytes)},
       else: :error
   end
 
-  defp attributes(_t, _bytes), do: :error
+  defp attributes(_t, _bytes, _codepage), do: :error
 
   defp skip_attributes(<<count::16-little, rest::binary>>), do: skip_attributes(rest, count)
   defp skip_attributes(rest, 0), do: rest
@@ -224,24 +230,27 @@ defmodule ADS.DataType do
     skip_attributes(rest, n - 1)
   end
 
-  defp enum(t, <<count::16-little, rest::binary>>), do: enum_values(t, rest, count, [])
-  defp enum(_t, _bytes), do: :error
+  defp enum(t, <<count::16-little, rest::binary>>, codepage),
+    do: enum_values(t, rest, count, codepage, [])
 
-  defp enum_values(t, rest, 0, values), do: {:ok, %{t | enum: Enum.reverse(values)}, rest}
+  defp enum(_t, _bytes, _codepage), do: :error
 
-  defp enum_values(%{size: size} = t, <<name_length, rest::binary>>, n, values) do
+  defp enum_values(t, rest, 0, _codepage, values),
+    do: {:ok, %{t | enum: Enum.reverse(values)}, rest}
+
+  defp enum_values(%{size: size} = t, <<name_length, rest::binary>>, n, codepage, values) do
     case rest do
       <<name::binary-size(name_length), 0, value::binary-size(size), rest::binary>>
       when size > 0 ->
         value = enum_value(value, t.data_type)
-        enum_values(t, rest, n - 1, [{ADS.Symbol.text(name), value} | values])
+        enum_values(t, rest, n - 1, codepage, [{ADS.Symbol.text(name, codepage), value} | values])
 
       _ ->
         :error
     end
   end
 
-  defp enum_values(_t, _bytes, _n, _values), do: :error
+  defp enum_values(_t, _bytes, _n, _codepage, _values), do: :error
 
   defp enum_value(bytes, data_type) when data_type in [:int8, :int16, :int32, :int64] do
     bits = bit_size(bytes)

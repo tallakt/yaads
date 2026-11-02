@@ -95,11 +95,17 @@ defmodule ADS.SecureTest do
     refute Secure.psk_key("MY_IDENTITY", "mysecret") == Secure.psk_key("MY_IDENTITY", "MySecret")
   end
 
-  test "strings in Windows-1252" do
-    assert Secure.ansi!("Grüße €") == <<"Gr", 0xFC, 0xDF, "e ", 0x80>>
-    assert Secure.ansi(<<"Gr", 0xFC, 0xDF, "e ", 0x80, 0x9F>>) == "Grüße €Ÿ"
-    assert_raise ArgumentError, fn -> Secure.ansi!("Ω") end
-    assert_raise ArgumentError, fn -> Secure.ansi!(<<0xFF>>) end
+  test "the strings of a TlsConnectInfo, in the code page" do
+    info = Secure.connect_info([], <<10, 0, 0, 7, 1, 1>>, "Пульт", {"Админ", "1"}, :windows_1251)
+    assert binary_part(info, 32, 5) == <<0xCF, 0xF3, 0xEB, 0xFC, 0xF2>>
+
+    assert {:ok, %{hostname: "Пульт", credentials: {"Админ", "1"}}, ""} =
+             Secure.decode_connect_info(info, :windows_1251)
+
+    assert_raise ArgumentError, fn -> Secure.connect_info([], <<0::48>>, "Пульт") end
+
+    # 0x88 in one, 0x80 in the other
+    refute Secure.psk_key("€", "1", :windows_1251) == Secure.psk_key("€", "1", :windows_1252)
   end
 
   test "fingerprints, as TwinCAT shows them", %{client_self: {cert, _key}} do

@@ -116,14 +116,22 @@ defmodule Mix.Tasks.Ads.RouteTest do
     _ = run(~w(127.0.0.1 --password 1 -y --no-connect) ++ c.ports)
     assert [%{net_id: "127.0.0.1.1.1"}] = FakeDiscovery.routes(c.udp)
 
-    said = run(~w(127.0.0.1 --delete) ++ c.ports, ["", "1", "", ""])
+    said = run(~w(127.0.0.1 --delete) ++ c.ports, ["", "", "1", ""])
 
-    assert {:info, "Deleting the route " <> _} =
-             Enum.find(said, &match?({:info, "Deleting" <> _}, &1))
+    assert [
+             {:prompt, "This machine's NetId [127.0.0.1.1.1]:"},
+             {:prompt, "User [Administrator]:"},
+             {:prompt, "Password:"},
+             {:prompt, "Route name [" <> _},
+             {:info, "Deleting the route " <> _},
+             {:info, "Deleted."}
+           ] = said
 
-    assert List.last(said) == {:info, "Deleted."}
     refute Enum.any?(said, &match?({:info, "Connecting..."}, &1))
     assert FakeDiscovery.routes(c.udp) == []
+
+    # The route there again, for the wrong password to be refused.
+    _ = run(~w(127.0.0.1 --password 1 -y --no-connect) ++ c.ports)
 
     assert_raise Mix.Error, ~r/refused: :device_invalid_access/, fn ->
       run(~w(127.0.0.1 --delete --password 2 -y) ++ c.ports)
@@ -157,42 +165,45 @@ defmodule Mix.Tasks.Ads.RouteTest do
                  end
   end
 
-  test "a delete looks for the route first, and :device_error is the error unless it was there",
-       c do
+  test "a delete is of a route the PLC answers this machine through before, and not after", c do
     add = ~w(127.0.0.1 --password 1 -y --no-connect)
 
-    # There, and gone after, though the answer was :device_error.
+    # Answered before, not after: deleted, though the answer was :device_error.
     _ = run(add ++ c.ports)
     :ok = FakeDiscovery.set(c.udp, :deleted, 0x700)
 
     assert List.last(run(~w(127.0.0.1 --delete --password 1 -y) ++ c.ports)) ==
-             {:info, "Deleted, though CX-FAKE (127.0.0.1) answered :device_error."}
+             {:info, "Deleted."}
 
     assert FakeDiscovery.routes(c.udp) == []
 
-    # Not among the routes this machine sees there: nothing is sent.
+    # No answer before, with no route for this machine there: no login asked for, nothing sent,
+    # and nothing wrong.
+    assert run(~w(127.0.0.1 --delete) ++ c.ports, [""]) == [
+             {:prompt, "This machine's NetId [127.0.0.1.1.1]:"},
+             {:info,
+              "CX-FAKE (127.0.0.1) has no route for this machine (127.0.0.1.1.1): nothing to delete."}
+           ]
+
+    # Answered after too, its route of another name: the removal failed, whatever the answer.
     _ = run(add ++ ~w(--name plain) ++ c.ports)
 
-    assert_raise Mix.Error, ~r/has no route named nothing; nothing deleted/, fn ->
-      run(~w(127.0.0.1 --delete --password 1 -y --name nothing) ++ c.ports)
+    for missing <- [0, 0x700] do
+      :ok = FakeDiscovery.set(c.udp, :missing, missing)
+
+      assert_raise Mix.Error, ~r/Removal failed: it answered .*--list shows them/, fn ->
+        run(~w(127.0.0.1 --delete --password 1 -y --name other) ++ c.ports)
+      end
     end
 
     assert [%{name: "plain"}] = FakeDiscovery.routes(c.udp)
 
-    # With no route there for this machine, nothing to look with: the answer is as it comes, and
-    # :ok doesn't tell whether there was one to delete.
-    :ok = FakeDiscovery.set(c.udp, :deleted, 0)
-    _ = run(~w(127.0.0.1 --delete --password 1 -y --name plain) ++ c.ports)
-    :ok = FakeDiscovery.set(c.udp, :missing, 0)
+    # A refusal is as it comes.
+    :ok = FakeDiscovery.set(c.udp, :missing, 0x70C)
 
-    assert {:info, "CX-FAKE (127.0.0.1) answered :ok, but this machine has no route there" <> _} =
-             List.last(run(~w(127.0.0.1 --delete --password 1 -y --name plain) ++ c.ports))
-
-    :ok = FakeDiscovery.set(c.udp, :missing, 0x700)
-
-    assert_raise Mix.Error,
-                 ~r/refused: :device_error. TwinCAT answers so for a route it hasn't/,
-                 fn -> run(~w(127.0.0.1 --delete --password 1 -y --name plain) ++ c.ports) end
+    assert_raise Mix.Error, ~r/refused: :device_not_found/, fn ->
+      run(~w(127.0.0.1 --delete --password 1 -y --name other) ++ c.ports)
+    end
   end
 
   test "a wrong password is refused, and no route added", c do

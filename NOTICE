@@ -26,6 +26,26 @@ Listing routes reads the index group SYSTEMSERVICE_ENUMREMOTE (803) of
 Beckhoff's Tc2_Utilities PLC library, as TwinCAT shows its constants; the
 layout of an entry is as a TwinCAT 3.1 4026 system answers.
 
+Reading a system's host name, its network adapters and the address of a
+host name reads the index groups SYSTEMSERVICE_IPHOSTNAME (702) and
+SYSTEMSERVICE_IPHELPERAPI (701), with the offsets IPHELPERAPI_ADAPTERSINFO
+(1) and IPHELPERAPI_IPADDRBYHOSTNAME (4), of Beckhoff's Tc2_Utilities PLC
+library, as TwinCAT shows its constants. That 702 is a read of 256 bytes on
+AMS port 10000, answered with a string in Windows-1252 and a zero after it,
+follows source/Log4Tc/Mbc.Log4Tc.Receiver/AdsHostnameService.cs in
+https://github.com/mbc-engineering/log4TC (Apache License 2.0), a logging
+tool for TwinCAT, which was read to write it; none of its code is
+included. The list of adapters is the IP_ADAPTER_INFO structure of
+Windows' GetAdaptersInfo, as Microsoft documents it; how it is laid out,
+and the answers of 701, are as a TwinCAT 3.1 4026 system answers.
+
+Strings of one byte to a character are converted by Codepagex,
+https://github.com/tallakt/codepagex (Apache License 2.0, Copyright Tallak
+Tveide), a dependency, which compiles the code pages yaads uses into it
+from the mapping tables of the Unicode Consortium,
+https://www.unicode.org/Public/MAPPINGS/, as Codepagex ships them. None of
+Codepagex's code is included in yaads' source.
+
 Beckhoff and TwinCAT are registered trademarks of, and licensed by,
 Beckhoff Automation GmbH. yaads is not made, endorsed or supported by
 Beckhoff.

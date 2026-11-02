@@ -6,7 +6,9 @@ defmodule ADS do
     * `ADS.Client` talks to a PLC, or any other ADS device, over one connection, with many requests
       on the way at once, and reconnects by itself.
     * `ADS.Discovery` finds PLCs on the network, and adds and deletes routes on them, over UDP;
-      `ADS.Client.routes/2` lists them, and `mix ads.route` does all three from the command line.
+      `ADS.Client.routes/2` lists them, and `mix ads.route` does all three from the command line;
+      `mix ads.info` shows a system's state, host name and network adapters.
+    * `ADS.Codepage` is the code page of the PLC's strings, Windows-1252 unless told otherwise.
     * `ADS.Type` turns PLC values into Elixir terms and back, from the types the PLC describes or
       ones given by hand.
     * `ADS.Symbol` and `ADS.DataType` are the PLC's own descriptions of its variables and types.

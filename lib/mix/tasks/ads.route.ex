@@ -45,16 +45,21 @@ defmodule Mix.Tasks.Ads.Route do
     * `--no-connect` - don't connect after
     * `--list` - list the PLC's routes rather than add one, through this machine's route to it,
       which it needs; no login is asked for
-    * `--delete` - delete the route rather than add it, asked for as when adding it, and with no
-      connecting after; the route of the name, which TwinCAT deletes by, as it was added. If this
-      machine has a route there, the name is looked for among the PLC's routes first, and nothing
-      is sent if it isn't one of them; and after, as TwinCAT's answer doesn't tell
+    * `--delete` - delete the route rather than add it; the route of the name, which TwinCAT
+      deletes by, as it was added. If the PLC doesn't answer this machine over ADS, it has no
+      route for it, and nothing is asked or deleted; if it does, the login and name are asked for
+      as when adding, and it is to answer no more after, or the removal failed, as TwinCAT's
+      answer doesn't tell
     * `--timeout` - how long to wait for answers over UDP, in ms (default 2000 for the search,
       5000 otherwise)
     * `--tcp-port`, `--udp-port`, `--ams-port` - if not 48898, 48899 and 851
+    * `--codepage` - of the PLC's strings, such as `windows-1251`, if not Windows-1252 (see
+      `ADS.Codepage`)
   """
 
   use Mix.Task
+
+  import Mix.ADS
 
   alias ADS.{Client, Discovery, NetId, Route}
 
@@ -74,7 +79,8 @@ defmodule Mix.Tasks.Ads.Route do
     timeout: :integer,
     tcp_port: :integer,
     udp_port: :integer,
-    ams_port: :integer
+    ams_port: :integer,
+    codepage: :string
   ]
 
   @impl Mix.Task
@@ -93,29 +99,35 @@ defmodule Mix.Tasks.Ads.Route do
 
   # The route added or deleted, as asked for.
   defp change!(device, local_net_id, opts) do
-    user = ask(opts, :user, "User", "Administrator")
-    password = opts[:password] || password()
+    if opts[:delete],
+      do: delete!(device, local_net_id, opts),
+      else: add!(device, local_net_id, opts)
+  end
+
+  defp add!(device, local_net_id, opts) do
+    {user, password} = login(opts)
     net_id = ask(opts, :net_id, "This machine's NetId", local_net_id, &net_id/1)
+    route = route(opts, user, password, net_id)
+
+    Mix.shell().info("Adding a route on #{label(device)}...")
+    route!(&Discovery.add_route/2, device, route)
+    client = client(device, if(net_id != local_net_id, do: net_id), opts)
+    if Keyword.get(opts, :connect, true), do: connect!(client)
+
+    Mix.shell().info("""
+
+        {:ok, plc} = ADS.Client.start_link(#{Enum.map_join(client, ", ", &option/1)})
+    """)
+  end
+
+  defp login(opts), do: {ask(opts, :user, "User", "Administrator"), opts[:password] || password()}
+
+  # The route, its name asked for last.
+  defp route(opts, user, password, net_id) do
     name = ask(opts, :name, "Route name", host_name())
 
-    route =
-      [user: user, password: password, net_id: net_id, name: name] ++
-        Keyword.take(opts, [:address]) ++ udp(opts)
-
-    if opts[:delete] do
-      client = client(device, if(net_id != local_net_id, do: net_id), opts)
-      delete!(device, name, route, client)
-    else
-      Mix.shell().info("Adding a route on #{label(device)}...")
-      route!(&Discovery.add_route/2, device, route)
-      client = client(device, if(net_id != local_net_id, do: net_id), opts)
-      if Keyword.get(opts, :connect, true), do: connect!(client)
-
-      Mix.shell().info("""
-
-          {:ok, plc} = ADS.Client.start_link(#{Enum.map_join(client, ", ", &option/1)})
-      """)
-    end
+    [user: user, password: password, net_id: net_id, name: name] ++
+      Keyword.take(opts, [:address]) ++ udp(opts)
   end
 
   # The device's routes, through this machine's route to it.
@@ -169,107 +181,6 @@ defmodule Mix.Tasks.Ads.Route do
     end
   end
 
-  # The PLC given, or one of those that answer a search.
-  defp device!([host], opts) do
-    case Discovery.info(host, udp(opts)) do
-      {:ok, device} ->
-        device
-
-      {:error, reason} ->
-        Mix.raise(
-          "No answer from #{host} on UDP port #{opts[:udp_port] || 48899} (#{inspect(reason)}). " <>
-            "Is it a TwinCAT system, and does no firewall stop the port?"
-        )
-    end
-  end
-
-  defp device!([], opts) do
-    Mix.shell().info("Searching for PLCs...")
-    search = for {:search, to} <- opts, do: to
-    search = if search == [], do: [], else: [to: search]
-
-    devices =
-      case Discovery.search(search ++ udp(opts)) do
-        {:ok, devices} -> Enum.sort_by(devices, & &1.address)
-        {:error, reason} -> Mix.raise("Couldn't search: #{inspect(reason)}")
-      end
-
-    choose(devices, opts)
-  end
-
-  # A firewall that lets in only answers to what was sent drops those to a broadcast, as they come
-  # from another address than it went to.
-  @no_answer """
-  No PLCs answered. A firewall on this machine may have dropped their answers to the broadcast, as
-  ufw does: give a PLC's address, or let them in, as with
-  `sudo ufw allow proto udp from any port 48899`.\
-  """
-
-  defp choose([], opts) do
-    if opts[:yes], do: Mix.raise(@no_answer)
-    Mix.shell().info(@no_answer)
-    device!([ask(opts, :host, "PLC's address", nil)], opts)
-  end
-
-  defp choose(devices, opts) do
-    Mix.shell().info(table(devices))
-    n = length(devices)
-    if opts[:yes] && n > 1, do: Mix.raise("#{n} PLCs answered; give one: mix ads.route ADDRESS")
-
-    choice = fn answer ->
-      case Integer.parse(answer) do
-        {i, ""} when i in 1..n//1 -> {:ok, Enum.at(devices, i - 1)}
-        {_, ""} -> {:error, "Not one of 1-#{n}: #{answer}"}
-        _ -> {:ok, answer}
-      end
-    end
-
-    case ask(opts, :host, "PLC (1-#{n}, or an address)", if(n == 1, do: "1"), choice) do
-      %{} = device -> device
-      host -> device!([host], opts)
-    end
-  end
-
-  # A line for each device, numbered, in columns.
-  defp table(devices) do
-    devices
-    |> Enum.with_index(1)
-    |> Enum.map(fn {d, i} -> ["#{i}", d.name || "-", ip(d.address), d.net_id] end)
-    |> columns()
-  end
-
-  defp columns(rows) do
-    widths = rows |> Enum.zip() |> Enum.map(fn column -> column |> Tuple.to_list() |> width() end)
-
-    lines =
-      for row <- rows do
-        row
-        |> Enum.zip(widths)
-        |> Enum.map_join("  ", fn {cell, w} -> String.pad_trailing(cell, w) end)
-        |> String.trim_trailing()
-      end
-
-    ["\n", Enum.map(lines, &["  ", &1, "\n"])]
-  end
-
-  defp width(cells), do: cells |> Enum.map(&String.length/1) |> Enum.max()
-
-  # This machine's address towards the device, for its NetId by default, as the client has it.
-  defp local_address!(ip, opts) do
-    {:ok, socket} = :gen_udp.open(0, [:binary])
-
-    try do
-      with :ok <- :gen_udp.connect(socket, ip, opts[:udp_port] || 48899),
-           {:ok, {local, _port}} <- :inet.sockname(socket) do
-        local
-      else
-        {:error, reason} -> Mix.raise("No way to #{ip(ip)}: #{inspect(reason)}")
-      end
-    after
-      :gen_udp.close(socket)
-    end
-  end
-
   # The route added or deleted, or why not.
   defp route!(fun, device, route) do
     with {:error, _} = error <- route(fun, device, route), do: fail!(device, error)
@@ -292,80 +203,72 @@ defmodule Mix.Tasks.Ads.Route do
   defp fail!(device, {:error, reason}, nil), do: Mix.raise(refused(device, reason))
   defp fail!(device, {:error, reason}, why), do: Mix.raise(refused(device, reason) <> " " <> why)
 
-  # The route deleted, looked for first among the device's routes, if this machine can see them:
-  # TwinCAT 3.1 4026 answers :device_error for a route it hasn't, so that answer for a route that
-  # was there is looked into again.
-  defp delete!(device, name, route, client) do
-    before = routes(client)
+  # The route deleted, with the device answering this machine over ADS before, and not after: what
+  # TwinCAT answers to the delete doesn't tell, as 3.1 4026 answers :device_error for a route it
+  # hasn't, and at times for one it deletes.
+  # So the login and the name are asked for only if there's a route for this machine to delete.
+  defp delete!(device, local_net_id, opts) do
+    net_id = ask(opts, :net_id, "This machine's NetId", local_net_id, &net_id/1)
+    client = client(device, if(net_id != local_net_id, do: net_id), opts)
 
-    _ =
-      with {:ok, routes} <- before,
-           false <- Enum.any?(routes, &(&1.name == name)),
-           do: Mix.raise("#{label(device)} has no route named #{name}; nothing deleted.")
+    case answers(client) do
+      :ok ->
+        {user, password} = login(opts)
+        delete_route!(device, route(opts, user, password, net_id), client)
 
-    Mix.shell().info("Deleting the route #{name} on #{label(device)}...")
-
-    case {route(&Discovery.delete_route/2, device, route), before} do
-      {answer, {:ok, _}} when answer in [:ok, {:error, :device_error}] ->
-        gone!(device, name, client, answer)
-
-      {:ok, _unseen} ->
+      {:error, _reason} ->
         Mix.shell().info(
-          "#{label(device)} answered :ok, but this machine has no route there to see its routes " <>
-            "with, so whether there was one named #{name} to delete isn't known."
+          "#{label(device)} has no route for this machine (#{net_id}): nothing to delete."
+        )
+    end
+  end
+
+  defp delete_route!(device, route, client) do
+    Mix.shell().info("Deleting the route #{route[:name]} on #{label(device)}...")
+    answer = route(&Discovery.delete_route/2, device, route)
+
+    case {answer, gone?(client)} do
+      {answer, true} when answer in [:ok, {:error, :device_error}] ->
+        Mix.shell().info("Deleted.")
+
+      {answer, false} when answer in [:ok, {:error, :device_error}] ->
+        fail!(
+          device,
+          {:error, :not_deleted},
+          "Removal failed: it answered #{inspect(answer)}, and answers this machine still. " <>
+            "Is its route named otherwise? --list shows them."
         )
 
-      {{:error, :device_error} = error, _unseen} ->
-        fail!(device, error, "TwinCAT answers so for a route it hasn't too.")
-
-      {error, _} ->
+      {error, _gone} ->
         fail!(device, error)
     end
   end
 
-  # A route that was there before: gone after, as the routes say, or the device by closing on
-  # this machine, which it let in before. TwinCAT's answer alone doesn't tell.
-  defp gone!(device, name, client, answer) do
-    gone =
-      case routes(client) do
-        {:ok, routes} -> not Enum.any?(routes, &(&1.name == name))
-        {:error, :closed} -> true
-        {:error, _reason} -> false
-      end
+  # Whether the device answers no more, on a new connection, given a moment to.
+  defp gone?(client, tries \\ 3) do
+    case answers(client) do
+      {:error, _reason} ->
+        true
 
-    cond do
-      not gone ->
-        fail!(device, {:error, :not_deleted}, "It answered #{inspect(answer)}, and has it still.")
+      :ok when tries > 1 ->
+        Process.sleep(200)
+        gone?(client, tries - 1)
 
-      answer == :ok ->
-        Mix.shell().info("Deleted.")
-
-      true ->
-        Mix.shell().info("Deleted, though #{label(device)} answered :device_error.")
+      :ok ->
+        false
     end
   end
 
-  # The device's routes, as this machine sees them, or why not.
-  defp routes(options) do
+  # Whether the device answers this machine, over a connection of its own: its system service
+  # answers its state to any client it has a route for, PLC running or not.
+  defp answers(options) do
     {:ok, client} = Client.start_link(options)
 
     try do
-      Client.routes(client)
+      with {:ok, _state} <- Client.read_state(client, port: 10_000), do: :ok
     after
       Client.stop(client)
     end
-  end
-
-  # The client's options, as start_link/1 is to have them.
-  defp client(device, net_id, opts) do
-    [
-      host: ip(device.address),
-      net_id: device.net_id,
-      local_net_id: net_id,
-      port: opts[:tcp_port],
-      ams_port: opts[:ams_port]
-    ]
-    |> Enum.reject(fn {_key, value} -> value == nil end)
   end
 
   defp refused(device, :device_invalid_access = reason),
@@ -387,49 +290,6 @@ defmodule Mix.Tasks.Ads.Route do
       end
     after
       Client.stop(client)
-    end
-  end
-
-  # An answer, or what's in brackets: asked, unless given as an option or --yes says to take it,
-  # and asked again until there's one that check gives {:ok, value} for.
-  defp ask(opts, key, question, default, check \\ &{:ok, &1}) do
-    given = Keyword.get(opts, key) || if(opts[:yes], do: default)
-    prompt = if default, do: "#{question} [#{default}]:", else: "#{question}:"
-
-    case check.(given || answer(Mix.shell().prompt(prompt), default)) do
-      {:ok, ""} ->
-        ask(opts, key, question, default, check)
-
-      {:ok, value} ->
-        value
-
-      {:error, message} when given != nil ->
-        Mix.raise(message)
-
-      {:error, message} ->
-        Mix.shell().error(message)
-        ask(opts, key, question, default, check)
-    end
-  end
-
-  defp answer(:eof, _default) do
-    Mix.raise(
-      "No more input. Run it in a terminal to be asked, or give the PLC, --password and --yes " <>
-        "for nothing to be asked"
-    )
-  end
-
-  defp answer(line, default) do
-    case String.trim(line) do
-      "" -> default || ""
-      answer -> answer
-    end
-  end
-
-  defp net_id(answer) do
-    case NetId.parse(answer) do
-      {:ok, _} -> {:ok, answer}
-      :error -> {:error, "Not a NetId, such as 10.0.0.7.1.1: #{answer}"}
     end
   end
 
@@ -485,15 +345,8 @@ defmodule Mix.Tasks.Ads.Route do
     List.to_string(name)
   end
 
-  defp udp(opts) do
-    for {from, to} <- [udp_port: :port, timeout: :timeout], value = opts[from], do: {to, value}
-  end
+  defp option({key, value}) when is_binary(value) or is_atom(value),
+    do: "#{key}: #{inspect(value)}"
 
-  defp label(%{name: nil} = device), do: ip(device.address)
-  defp label(device), do: "#{device.name} (#{ip(device.address)})"
-
-  defp ip(address), do: address |> :inet.ntoa() |> List.to_string()
-
-  defp option({key, value}) when is_binary(value), do: "#{key}: #{inspect(value)}"
   defp option({key, value}), do: "#{key}: #{value}"
 end

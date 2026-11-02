@@ -70,29 +70,32 @@ defmodule ADS.Symbol do
     extended_flags: 0x8000
   ]
 
-  @doc "The symbol entry at the start of the bytes, as in the answer to a request by name."
-  @spec decode(binary) :: {:ok, t} | :error
-  def decode(bytes) do
-    case entry(bytes) do
+  @doc """
+  The symbol entry at the start of the bytes, as in the answer to a request by name; its strings
+  in UTF-8 if they are, as plain ASCII is, or else in the code page (see `ADS.Codepage`).
+  """
+  @spec decode(binary, ADS.Codepage.t()) :: {:ok, t} | :error
+  def decode(bytes, codepage \\ ADS.Codepage.default()) do
+    case entry(bytes, codepage) do
       {:ok, symbol, _rest} -> {:ok, symbol}
       :error -> :error
     end
   end
 
-  @doc "Every symbol entry in the bytes, as uploaded."
-  @spec decode_all(binary) :: {:ok, [t]} | :error
-  def decode_all(bytes), do: entries(bytes, [])
+  @doc "Every symbol entry in the bytes, as uploaded; the strings as for `decode/2`."
+  @spec decode_all(binary, ADS.Codepage.t()) :: {:ok, [t]} | :error
+  def decode_all(bytes, codepage \\ ADS.Codepage.default()), do: entries(bytes, codepage, [])
 
-  defp entries(<<>>, symbols), do: {:ok, Enum.reverse(symbols)}
+  defp entries(<<>>, _codepage, symbols), do: {:ok, Enum.reverse(symbols)}
 
-  defp entries(bytes, symbols) do
-    case entry(bytes) do
-      {:ok, symbol, rest} -> entries(rest, [symbol | symbols])
+  defp entries(bytes, codepage, symbols) do
+    case entry(bytes, codepage) do
+      {:ok, symbol, rest} -> entries(rest, codepage, [symbol | symbols])
       :error -> :error
     end
   end
 
-  defp entry(<<length::32-little, _::binary>> = bytes)
+  defp entry(<<length::32-little, _::binary>> = bytes, codepage)
        when length >= 30 and byte_size(bytes) >= length do
     <<entry::binary-size(length), rest::binary>> = bytes
 
@@ -100,9 +103,9 @@ defmodule ADS.Symbol do
       flags::32-little, name_length::16-little, type_length::16-little, comment_length::16-little,
       strings::binary>> = entry
 
-    with {:ok, name, strings} <- string(strings, name_length),
-         {:ok, type, strings} <- string(strings, type_length),
-         {:ok, comment, extra} <- string(strings, comment_length) do
+    with {:ok, name, strings} <- string(strings, name_length, codepage),
+         {:ok, type, strings} <- string(strings, type_length, codepage),
+         {:ok, comment, extra} <- string(strings, comment_length, codepage) do
       {guid, extra} = if flagged?(flags, @type_guid), do: guid(extra), else: {nil, extra}
 
       symbol = %__MODULE__{
@@ -114,7 +117,7 @@ defmodule ADS.Symbol do
         data_type: ADS.Type.id_name(data_type),
         flags: flags,
         comment: comment,
-        attributes: if(flagged?(flags, @attributes), do: attributes(extra), else: %{}),
+        attributes: if(flagged?(flags, @attributes), do: attributes(extra, codepage), else: %{}),
         guid: guid
       }
 
@@ -124,7 +127,7 @@ defmodule ADS.Symbol do
     end
   end
 
-  defp entry(_bytes), do: :error
+  defp entry(_bytes, _codepage), do: :error
 
   @doc """
   The flags of a symbol by name, those that are known: `:persistent`, `:read_only` and so on.
@@ -138,17 +141,17 @@ defmodule ADS.Symbol do
 
   @doc false
   # A string of a known length and a zero after it; in UTF-8 if it is valid UTF-8, as plain ASCII
-  # is, or else Latin-1.
-  def string(bytes, length) do
+  # is, or else in the code page.
+  def string(bytes, length, codepage) do
     case bytes do
-      <<string::binary-size(length), 0, rest::binary>> -> {:ok, text(string), rest}
+      <<string::binary-size(length), 0, rest::binary>> -> {:ok, text(string, codepage), rest}
       _ -> :error
     end
   end
 
   @doc false
-  def text(bytes),
-    do: if(String.valid?(bytes), do: bytes, else: :unicode.characters_to_binary(bytes, :latin1))
+  def text(bytes, codepage),
+    do: if(String.valid?(bytes), do: bytes, else: ADS.Codepage.decode(bytes, codepage))
 
   @doc false
   # A GUID as Windows writes it: the first three parts are little-endian numbers.
@@ -161,20 +164,25 @@ defmodule ADS.Symbol do
 
   @doc false
   # Attributes, name and value, such as {"TcEncoding", "UTF-8"}; what doesn't parse is left out.
-  def attributes(<<count::16-little, rest::binary>>), do: attributes(rest, count, %{})
-  def attributes(_bytes), do: %{}
+  def attributes(<<count::16-little, rest::binary>>, codepage),
+    do: attributes(rest, count, codepage, %{})
 
-  defp attributes(_rest, 0, attributes), do: attributes
+  def attributes(_bytes, _codepage), do: %{}
 
-  defp attributes(<<name_length, value_length, rest::binary>>, n, attributes) do
+  defp attributes(_rest, 0, _codepage, attributes), do: attributes
+
+  defp attributes(<<name_length, value_length, rest::binary>>, n, codepage, attributes) do
     case rest do
       <<name::binary-size(name_length), 0, value::binary-size(value_length), 0, rest::binary>> ->
-        attributes(rest, n - 1, Map.put(attributes, text(name), text(value)))
+        attributes =
+          Map.put(attributes, text(name, codepage), text(value, codepage))
+
+        attributes(rest, n - 1, codepage, attributes)
 
       _ ->
         attributes
     end
   end
 
-  defp attributes(_rest, _n, attributes), do: attributes
+  defp attributes(_rest, _n, _codepage, attributes), do: attributes
 end
