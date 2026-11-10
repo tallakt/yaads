@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `mix ads.symbols` lists a PLC's variables, each by name with its type, its size and its comment:
+  `--filter` keeps the names with a text in them, `--tsv` gives them tab-separated with their index
+  groups, offsets and flags, and `--ams-port` asks another runtime than 851.
+
 ## 0.1.1
 
 - A connection the device closes as soon as it's made, as TwinCAT does for a host it has no route

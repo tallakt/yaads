@@ -155,6 +155,22 @@ CX-1234AB (10.0.0.5), 5.36.69.176.1.1
 `--state`, `--host-name` and `--adapters` show only those, and `--resolve NAME` looks a host name
 up on the PLC, with its DNS and hosts file.
 
+`mix ads.symbols` lists the PLC's variables, through the same route: each by name, with its type,
+its size and its comment.
+
+```
+$ mix ads.symbols 10.0.0.5 --filter pump
+CX-1234AB (10.0.0.5), 5.36.69.176.1.1, AMS port 851
+
+  Name           Type     Size  Comment
+  MAIN.bPumpRun  BOOL     1     Start the pump
+  MAIN.stPump    ST_Pump  24
+  2 of 120 variables
+```
+
+`--filter` keeps the names with a text in them, `--tsv` gives them tab-separated with their index
+groups, offsets and flags, for a spreadsheet, and `--ams-port` asks another runtime than 851.
+
 `ADS.Discovery` does the same from code, over UDP port 48899, as TwinCAT's own Broadcast Search
 and Add Route do:
 

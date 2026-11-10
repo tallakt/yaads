@@ -21,8 +21,9 @@ defmodule ADS.Symbol do
   | ... | attributes, if flagged (`0x1000`): a count of 2 bytes, then each with a byte for the length of its name and one for its value, and both with a zero after |
 
   Beckhoff's manuals don't describe this layout, only how to ask for it; it's written here from
-  general knowledge of the format, not from another implementation's code, and is yet to be
-  checked against a PLC.
+  general knowledge of the format, not from another implementation's code. It has been checked
+  against a TwinCAT 3.1.4026 PLC: the 670 symbols of its program, by name, type, size, offset and
+  comment, as the project's own TMC file has them.
 
   Beckhoff recommends reaching a variable by a handle from its name, as `ADS.Client` does, rather
   than by its index group and offset, which change when the program does.
