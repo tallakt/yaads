@@ -674,8 +674,19 @@ defmodule ADS.ClientTest do
     client = scripted(port, backoff: {10, 20})
     socket = accept(listen)
     :gen_tcp.close(socket)
-    # The reason depends on when the close lands: :closed, or a reset or einval from the socket.
+    # The client connects again, whenever the close landed; the next test has its reason.
     _again = accept(listen)
     eventually(fn -> Client.status(client) == :connected end)
+  end
+
+  test "a connection closed as soon as it's made says closed, whenever the close lands" do
+    {listen, port} = listen()
+    client = scripted(port, backoff: {300, 300})
+
+    for _ <- 1..5 do
+      :ok = :gen_tcp.close(accept(listen))
+      eventually(fn -> match?({:disconnected, _}, Client.status(client)) end)
+      assert Client.status(client) == {:disconnected, :closed}
+    end
   end
 end

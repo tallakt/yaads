@@ -150,7 +150,7 @@ defmodule ADS.Client.Connection do
     # A route is added once; the next connections use it.
     s = if s.secure, do: put_in(s.secure.add_route, nil), else: s
 
-    case setopts(s, active: :once) do
+    case arm(s) do
       :ok -> {:noreply, s |> resubscribe() |> frames()}
       {:error, reason} -> {:noreply, drop(s, reason)}
     end
@@ -331,7 +331,7 @@ defmodule ADS.Client.Connection do
         frames(%{s | buffer: rest, heard: now()})
 
       :more ->
-        case setopts(s, active: :once) do
+        case arm(s) do
           :ok -> flush(s)
           {:error, reason} -> drop(s, reason)
         end
@@ -679,6 +679,15 @@ defmodule ADS.Client.Connection do
 
   defp send_data(%{framing: :tcp, socket: socket}, data), do: :gen_tcp.send(socket, data)
   defp send_data(%{framing: :tls, socket: socket}, data), do: :ssl.send(socket, data)
+
+  # The socket made ready for what comes next. One the device has closed already, as TwinCAT closes
+  # a connection from a host it has no route for, says einval: the connection is closed.
+  defp arm(s) do
+    case setopts(s, active: :once) do
+      {:error, :einval} -> {:error, :closed}
+      result -> result
+    end
+  end
 
   defp setopts(%{framing: :tcp, socket: socket}, opts), do: :inet.setopts(socket, opts)
   defp setopts(%{framing: :tls, socket: socket}, opts), do: :ssl.setopts(socket, opts)

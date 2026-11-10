@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- A connection the device closes as soon as it's made, as TwinCAT does for a host it has no route
+  for, is `{:disconnected, :closed}`, and no longer `{:disconnected, :einval}` when the close
+  lands before the client is ready to read.
+
 ## 0.1.0
 
 The first release: a client for ADS devices, TwinCAT PLCs above all, over TCP and over Secure ADS
