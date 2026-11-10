@@ -204,6 +204,7 @@ defmodule Mix.ADS do
     do: "#{label(device)}, #{device.net_id}, AMS port #{opts[:ams_port] || 851}\n"
 
   # A device that doesn't answer over ADS, which it does only to a machine it has a route for.
+  @spec no_route!(map, term) :: no_return()
   def no_route!(device, reason) do
     Mix.raise(
       "No answer from #{label(device)} over ADS (#{inspect(reason)}). It answers only a " <>
