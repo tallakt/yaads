@@ -189,6 +189,31 @@ defmodule Mix.ADS do
     end
   end
 
+  # The device and the client's options as a task has them, and the line that says which it is.
+  def connect!(device, opts) do
+    local_net_id = device.address |> local_address!(opts) |> NetId.from_ip() |> NetId.to_string()
+    net_id = opts[:net_id] && ask(opts, :net_id, "This machine's NetId", nil, &net_id/1)
+
+    {:ok, client} =
+      ADS.Client.start_link(client(device, if(net_id != local_net_id, do: net_id), opts))
+
+    client
+  end
+
+  def heading(device, opts),
+    do: "#{label(device)}, #{device.net_id}, AMS port #{opts[:ams_port] || 851}\n"
+
+  # A device that doesn't answer over ADS, which it does only to a machine it has a route for.
+  def no_route!(device, reason) do
+    Mix.raise(
+      "No answer from #{label(device)} over ADS (#{inspect(reason)}). It answers only a " <>
+        "machine it has a route for: mix ads.route adds one."
+    )
+  end
+
+  # A comment over several lines, or with tabs, as one line.
+  def one_line(text), do: text |> String.replace(~r/\s+/, " ") |> String.trim()
+
   def label(%{name: nil} = device), do: ip(device.address)
   def label(device), do: "#{device.name} (#{ip(device.address)})"
 

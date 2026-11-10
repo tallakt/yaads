@@ -68,6 +68,48 @@ defmodule Mix.Tasks.Ads.SymbolsTest do
              utf8
   end
 
+  test "--type describes a structure, an enumeration, another name and bits", c do
+    args = ~w(127.0.0.1 --type ST_Pump --type E_Mode --type T_MaxString --type ST_Flags)
+    assert [{:info, "CX-FAKE (127.0.0.1)" <> _}, {:info, text}] = run(args ++ c.ports)
+
+    assert String.split(text, "\n", trim: true) == [
+             "  ST_Pump, 32 bytes, 5 members",
+             "  Name      Type        Offset  Size  Comment",
+             "  nSpeed    INT         0       2",
+             "  fTemp     LREAL       8       8",
+             "  bRunning  BOOL        16      1",
+             "  eMode     E_Mode      18      2",
+             "  sTag      STRING(10)  20      11",
+             "  E_Mode, 2 bytes, an enumeration of INT",
+             "  Name     Value",
+             "  eOff     0",
+             "  eAuto    1",
+             "  eManual  2",
+             "  T_MaxString, 256 bytes, another name for STRING(255)",
+             "  ST_Flags, 2 bytes, 3 members",
+             "  Name   Type  Offset  Size   Comment",
+             "  bA     BIT   bit 0   1 bit",
+             "  bB     BIT   bit 1   1 bit",
+             "  nRest  BYTE  1       1"
+           ]
+  end
+
+  test "--type with --filter keeps the members with the text, and with --tsv tabs", c do
+    assert [_, {:info, text}] = run(~w(127.0.0.1 --type ST_Pump --filter temp) ++ c.ports)
+    assert text =~ ~r/\n  fTemp\s+LREAL\s+8\s+8\n$/
+    refute text =~ "nSpeed"
+
+    assert [_, {:info, text}] = run(~w(127.0.0.1 --type ST_Pump --filter none) ++ c.ports)
+    assert text =~ "None of them has that in its name."
+
+    assert [{:info, text}] = run(~w(127.0.0.1 --type E_Mode --tsv) ++ c.ports)
+    assert text == "name\tvalue\neOff\t0\neAuto\t1\neManual\t2"
+
+    assert_raise Mix.Error, ~r/has no type ST_None on AMS port 851/, fn ->
+      run(~w(127.0.0.1 --type ST_None) ++ c.ports)
+    end
+  end
+
   test "a PLC without a route, or without a runtime on the port, says so", c do
     assert_raise Mix.Error, ~r/AMS port 852 \(.+\)\. Is a PLC runtime there/, fn ->
       run(~w(127.0.0.1 --ams-port 852) ++ c.ports)

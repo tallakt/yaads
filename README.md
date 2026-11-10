@@ -170,6 +170,28 @@ CX-1234AB (10.0.0.5), 5.36.69.176.1.1, AMS port 851
 
 `--filter` keeps the names with a text in them, `--tsv` gives them tab-separated with their index
 groups, offsets and flags, for a spreadsheet, and `--ams-port` asks another runtime than 851.
+`--type NAME` describes a type instead, as the PLC does: the members of a structure or a function
+block, with their types, offsets, sizes and comments, the values of an enumeration, or what another
+name stands for.
+
+`mix ads.read` reads variables by name, and shows a structure member by member, in the PLC's order,
+and an array element by element, the same ones next to each other once:
+
+```
+$ mix ads.read 10.0.0.5 MAIN.nCount 'GVL.apPumps[0]' 'GVL.apPumps[0]^'
+CX-1234AB (10.0.0.5), 5.36.69.176.1.1, AMS port 851
+
+  MAIN.nCount      DINT                42
+  GVL.apPumps[0]   POINTER TO ST_Pump  18446632480689010600
+    an address: GVL.apPumps[0]^ is what it points to
+  GVL.apPumps[0]^  ST_Pump
+    bRunning  true
+    fSpeed    1450.0
+    aAlarms
+      [0..15]  false
+```
+
+A name is as the PLC's program writes it, with `^` after a pointer for what it points to.
 
 `ADS.Discovery` does the same from code, over UDP port 48899, as TwinCAT's own Broadcast Search
 and Add Route do:

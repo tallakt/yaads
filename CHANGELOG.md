@@ -4,7 +4,12 @@
 
 - `mix ads.symbols` lists a PLC's variables, each by name with its type, its size and its comment:
   `--filter` keeps the names with a text in them, `--tsv` gives them tab-separated with their index
-  groups, offsets and flags, and `--ams-port` asks another runtime than 851.
+  groups, offsets and flags, and `--ams-port` asks another runtime than 851. `--type NAME`
+  describes a type instead: the members of a structure or a function block, the values of an
+  enumeration, or what another name stands for.
+- `mix ads.read` reads variables by name, and shows a structure member by member, in the PLC's
+  order, and an array element by element, the same ones next to each other once. `^` after a
+  pointer reads what it points to, and a pointer's own value says it's an address.
 
 ## 0.1.1
 
