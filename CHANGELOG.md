@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.2
 
 - `mix ads.symbols` lists a PLC's variables, each by name with its type, its size and its comment:
   `--filter` keeps the names with a text in them, `--tsv` gives them tab-separated with their index
