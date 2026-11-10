@@ -1,10 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.1.1
 
 - A connection the device closes as soon as it's made, as TwinCAT does for a host it has no route
   for, is `{:disconnected, :closed}`, and no longer `{:disconnected, :einval}` when the close
   lands before the client is ready to read.
+- An array whose elements have no bytes is decoded up to a million of them: a device's description
+  that says billions no longer fills memory. More than that is `{:raw, 0}` in a type from a
+  description, and `:error` from `ADS.Type.decode/2`.
 
 ## 0.1.0
 
